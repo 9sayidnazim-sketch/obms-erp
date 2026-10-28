@@ -1,0 +1,1981 @@
+import { EventBus } from '@nestjs/cqrs';
+import {
+	Injectable,
+	BadRequestException,
+	ForbiddenException,
+	HttpStatus,
+	HttpException,
+	NotFoundException,
+	Optional
+} from '@nestjs/common';
+import {
+	DeleteResult,
+	IsNull,
+	SelectQueryBuilder,
+	Brackets,
+	WhereExpressionBuilder,
+	In,
+	FindOptionsWhere,
+	FindManyOptions,
+	Between,
+	FindOptionsRelations,
+	Raw,
+	SaveOptions
+} from 'typeorm';
+import { isBoolean, isUUID } from 'class-validator';
+import { SOFT_DELETABLE_FILTER } from 'mikro-orm-soft-delete';
+import {
+	BaseEntityEnum,
+	ActorTypeEnum,
+	ID,
+	IEmployee,
+	IUser,
+	IGetTaskOptions,
+	IGetTasksByViewFilters,
+	IPagination,
+	ITask,
+	ITaskUpdateInput,
+	PermissionsEnum,
+	ActionTypeEnum,
+	ITaskDateFilterInput,
+	EntitySubscriptionTypeEnum,
+	ITaskAdvancedFilter,
+	IAdvancedTaskFiltering,
+	EmployeeNotificationTypeEnum,
+	NotificationActionTypeEnum
+} from '@gauzy/contracts';
+import { isEmpty, isNotEmpty } from '@gauzy/utils';
+import { isPostgres, isSqlite } from '@gauzy/config';
+import { TenantAwareCrudService, BaseQueryDTO } from './../core/crud';
+import { IPartialEntity } from './../core/crud/icrud.service';
+import { sanitizeRichHtml } from './../core/html-sanitizer';
+import {
+	mikroOrmContains,
+	MultiORMEnum,
+	parseFindOptionsRelations,
+	parseFindOptionsSelect,
+	parseTypeORMFindToMikroOrm
+} from './../core/utils';
+import { addBetween, LIKE_OPERATOR } from './../core/util';
+import { RequestContext } from '../core/context';
+import { TaskViewService } from './views/view.service';
+import { EntitySubscriptionService } from '../entity-subscription/entity-subscription.service';
+import { MentionService } from '../mention/mention.service';
+import { ActivityLogService } from '../activity-log/activity-log.service';
+import { EmployeeNotificationService } from '../employee-notification/employee-notification.service';
+import { EmployeeRecentVisitService } from '../employee-recent-visit/employee-recent-visit.service';
+import { ManagedEmployeeService } from '../employee/managed-employee.service';
+import { CreateEntitySubscriptionEvent } from '../entity-subscription/events';
+import { OrganizationProject } from '../core/entities/internal';
+import { EventBus as DomainEventBus } from '../event-bus/event-bus';
+import { TaskEvent } from '../event-bus/events/task.event';
+import { BaseEntityEventTypeEnum } from '../event-bus/base-entity-event';
+import { IFindOneOptions } from '../core/crud/icrud.service';
+import { Task } from './task.entity';
+import { TypeOrmOrganizationSprintTaskHistoryRepository } from './../organization-sprint/repository/type-orm-organization-sprint-task-history.repository';
+import { GetTaskByIdDTO } from './dto';
+import { prepareSQLQuery as p } from './../database/database.helper';
+import { TypeOrmTaskRepository } from './repository/type-orm-task.repository';
+import { MikroOrmTaskRepository } from './repository/mikro-orm-task.repository';
+import { FavoriteService } from '../core/decorators';
+
+@FavoriteService(BaseEntityEnum.Task)
+@Injectable()
+export class TaskService extends TenantAwareCrudService<Task> {
+	constructor(
+		readonly typeOrmTaskRepository: TypeOrmTaskRepository,
+		readonly mikroOrmTaskRepository: MikroOrmTaskRepository,
+		readonly typeOrmOrganizationSprintTaskHistoryRepository: TypeOrmOrganizationSprintTaskHistoryRepository,
+		private readonly _eventBus: EventBus,
+		private readonly _taskViewService: TaskViewService,
+		private readonly _entitySubscriptionService: EntitySubscriptionService,
+		private readonly _mentionService: MentionService,
+		private readonly _activityLogService: ActivityLogService,
+		private readonly _employeeNotificationService: EmployeeNotificationService,
+		private readonly _employeeRecentVisitService: EmployeeRecentVisitService,
+		private readonly _managedEmployeeService: ManagedEmployeeService,
+		/**
+		 * The in-process domain event bus `TaskEvent` travels on (the one the create and update handlers
+		 * publish to). Optional so that a service built by hand in a test needs no stand-in for it.
+		 */
+		@Optional() private readonly _domainEventBus?: DomainEventBus
+	) {
+		super(typeOrmTaskRepository, mikroOrmTaskRepository);
+	}
+
+	/**
+	 * Creates a task, sanitizing the rich-text `description` HTML through the shared
+	 * server-side allowlist before persisting (see `sanitizeRichHtml`).
+	 *
+	 * @param entity - The task creation input
+	 * @returns The created task
+	 */
+	public async create(entity: IPartialEntity<Task>): Promise<Task> {
+		const input = entity as { description?: string };
+		if (typeof input.description === 'string') {
+			input.description = sanitizeRichHtml(input.description);
+		}
+		return await super.create(entity);
+	}
+
+	/**
+	 * Update task, if already exist
+	 *
+	 * @param id - The ID of the task to update
+	 * @param input - The data to update the task with
+	 * @returns The updated task
+	 */
+	async update(id: ID, input: Partial<ITaskUpdateInput>): Promise<ITask> {
+		try {
+			// Sanitize the rich-text description HTML before it reaches the persistence path below.
+			if (typeof input.description === 'string') {
+				input.description = sanitizeRichHtml(input.description);
+			}
+			const tenantId = RequestContext.currentTenantId() ?? input.tenantId;
+			const userId = RequestContext.currentUserId();
+
+			const user = RequestContext.currentUser();
+			const { mentionEmployeeIds, ...data } = input;
+
+			// Find task relations
+			const relations: FindOptionsRelations<Task> = {
+				tags: true,
+				members: true,
+				teams: true,
+				modules: true,
+				parent: true,
+				project: true,
+				organizationSprint: true,
+				taskStatus: true,
+				taskSize: true,
+				taskPriority: true,
+				linkedIssues: true,
+				dailyPlans: true
+			};
+
+			const task = await this.findOneByIdString(id, { relations });
+
+			const taskMembers = task.members;
+
+			// Separate members into removed and new members. Only an update that carries `members` changes
+			// them: without it (the estimate recalculated after an estimation changes, a module or screening
+			// update, a partial PUT) every assignee used to count as removed and lost their ASSIGNMENT subscription.
+			const membersChanged = Array.isArray(data.members);
+			const memberIdSet = new Set((data.members || []).map(({ id }) => id));
+			const existingMemberIdSet = new Set((taskMembers || []).map(({ id }) => id));
+
+			const removedMembers = membersChanged
+				? (taskMembers || []).filter((member) => !memberIdSet.has(member.id))
+				: [];
+			const newMembers = (data.members || []).filter((member) => !existingMemberIdSet.has(member.id));
+
+			// A task that moves to another project is renumbered in the project it moves TO: `number` is unique
+			// per project, so the next number of the old project (what this computed before) could collide in
+			// the new one, or leave the task numbered as if it had never moved. The prefix follows the project
+			// too, by the rule the create path uses (the first three characters of the project's name). The move
+			// is written by the one save below, together with the rest of the update: a save that fails leaves
+			// the task where it was.
+			let moved: Partial<Task> | null = null;
+			if (data.projectId && data.projectId !== task.projectId) {
+				// The task's organization after the update: the destination must be a project of it, and the next
+				// number is counted in it (counting in another organization could hand out a taken number).
+				const organizationId = data.organizationId ?? task.organizationId;
+				const projectId = data.projectId;
+
+				// Fails closed: a project that is not one of the organization's, or one that cannot be checked, is
+				// refused before anything is written (the tenant guard of the save checks the tenant only).
+				const destination = await this.findDestinationProject(projectId, tenantId, organizationId);
+				if (!destination.exists) {
+					throw new BadRequestException(
+						"The task cannot move to a project that is not one of the task's organization."
+					);
+				}
+
+				// Get the maximum task number for the project the task moves to, soft-deleted tasks included: they
+				// keep their number in the `taskNumber` unique index, as for a new task
+				const maxNumber = await this.getMaxTaskNumberByProject(
+					{
+						tenantId,
+						organizationId,
+						projectId
+					},
+					{ withDeleted: true }
+				);
+
+				moved = {
+					projectId,
+					number: maxNumber + 1,
+					// The destination's prefix, never the input's.
+					prefix: destination.prefix,
+					// A relation object in the input would otherwise point the save back at another project.
+					...('project' in data ? { project: { id: projectId } as Task['project'] } : {})
+				};
+			}
+
+			// Update the task with the provided data. When the task moved, the project, number and prefix computed
+			// above win over any the input carries: a client that sends the whole task back sends the old number.
+			const updatedTask = await super.create({
+				...data,
+				id,
+				...(moved ?? {})
+			});
+
+			// Register Task Sprint moving history
+			const { organizationSprintId } = data;
+			if (organizationSprintId && organizationSprintId !== task.organizationSprintId) {
+				await this.typeOrmOrganizationSprintTaskHistoryRepository.save({
+					fromSprintId: task.organizationSprintId || organizationSprintId, // Use incoming sprint ID if the task's organizationSprintId was previously null or undefined
+					toSprintId: organizationSprintId,
+					taskId: updatedTask.id,
+					movedById: userId,
+					reason: data.taskSprintMoveReason,
+					// A partial update may not carry the organization: fall back to the stored one
+					organizationId: data.organizationId ?? task.organizationId,
+					tenantId
+				});
+			}
+
+			// Synchronize mentions (only if mentionEmployeeIds is provided)
+			if (data.description && mentionEmployeeIds) {
+				// The saved organization: the edit may have moved the task to another one
+				await this.syncTaskMentions(id, mentionEmployeeIds, updatedTask.organizationId ?? task.organizationId);
+			}
+
+			// The save returns what was written: a partial update (e.g. only the estimate) carries no organization
+			// or title, so fall back to the stored task for the subscriptions and the activity log.
+			const organizationId = updatedTask.organizationId ?? task.organizationId;
+
+			// Unsubscribe members who were unassigned from task
+			await this.unsubscribeRemovedMembers(removedMembers, updatedTask.id, organizationId, tenantId);
+
+			// Subscribe the new assignees to the task
+			await this.subscribeNewMembers(newMembers, task, updatedTask.id, organizationId, tenantId, user);
+
+			// Generate the activity log
+			this._activityLogService.logActivity<Task>(
+				BaseEntityEnum.Task,
+				ActionTypeEnum.Updated,
+				ActorTypeEnum.User, // TODO : Since we have Github Integration, make sure we can also store "System" for actor
+				updatedTask.id,
+				updatedTask.title ?? task.title,
+				updatedTask,
+				organizationId,
+				tenantId,
+				task,
+				data
+			);
+
+			// Return the updated Task
+			return updatedTask;
+		} catch (error) {
+			console.error(`Error while updating task: ${error.message}`, error.message);
+			throw new HttpException({ message: error?.message, error }, HttpStatus.BAD_REQUEST);
+		}
+	}
+
+	/**
+	 * Synchronizes the task's mention records with the employees mentioned in the update.
+	 *
+	 * Best-effort by design: the task itself is already persisted by the time this runs, so a
+	 * mention-sync failure is logged and swallowed instead of failing the update.
+	 *
+	 * @param taskId - The ID of the updated task
+	 * @param mentionEmployeeIds - The IDs of the employees mentioned in the description
+	 */
+	private async syncTaskMentions(taskId: ID, mentionEmployeeIds: ID[], organizationId: ID): Promise<void> {
+		try {
+			await this._mentionService.updateEntityMentions(
+				BaseEntityEnum.Task,
+				taskId,
+				mentionEmployeeIds,
+				undefined,
+				undefined,
+				organizationId
+			);
+		} catch (error) {
+			console.error('Error synchronizing mentions:', error);
+		}
+	}
+
+	/**
+	 * Unsubscribes the members who were unassigned from the task.
+	 *
+	 * Best-effort by design: failures are logged and swallowed so subscription cleanup can never
+	 * fail an update that already succeeded.
+	 *
+	 * @param members - The members that are no longer assigned to the task
+	 * @param taskId - The ID of the updated task
+	 * @param organizationId - The organization of the updated task
+	 * @param tenantId - The tenant of the updated task
+	 */
+	private async unsubscribeRemovedMembers(
+		members: IEmployee[],
+		taskId: ID,
+		organizationId: ID,
+		tenantId: ID
+	): Promise<void> {
+		if (members.length === 0) {
+			return;
+		}
+
+		try {
+			await Promise.all(
+				members.map(
+					async (member) =>
+						await this._entitySubscriptionService.delete({
+							entity: BaseEntityEnum.Task,
+							entityId: taskId,
+							employeeId: member.id,
+							type: EntitySubscriptionTypeEnum.ASSIGNMENT,
+							organizationId,
+							tenantId
+						})
+				)
+			);
+		} catch (error) {
+			console.error('Error unsubscribing members from the task:', error);
+		}
+	}
+
+	/**
+	 * Subscribes the newly assigned members to the task and notifies them of the assignment.
+	 *
+	 * Best-effort by design: failures are logged and swallowed so the subscription/notification
+	 * path can never fail an update that already succeeded.
+	 *
+	 * @param members - The members newly assigned to the task
+	 * @param task - The task as loaded BEFORE the update (source of the notified id and title)
+	 * @param updatedTaskId - The ID of the updated task (subscription target)
+	 * @param organizationId - The organization of the updated task
+	 * @param tenantId - The tenant of the updated task
+	 * @param user - The user performing the update
+	 */
+	private async subscribeNewMembers(
+		members: IEmployee[],
+		task: Task,
+		updatedTaskId: ID,
+		organizationId: ID,
+		tenantId: ID,
+		user: IUser
+	): Promise<void> {
+		if (!members.length) {
+			return;
+		}
+
+		try {
+			await Promise.all(
+				members.map((member: IEmployee) => {
+					this._eventBus.publish(
+						new CreateEntitySubscriptionEvent({
+							entity: BaseEntityEnum.Task,
+							entityId: updatedTaskId,
+							employeeId: member.id,
+							type: EntitySubscriptionTypeEnum.ASSIGNMENT,
+							organizationId,
+							tenantId
+						})
+					);
+
+					this._employeeNotificationService.publishNotificationEvent(
+						{
+							entity: BaseEntityEnum.Task,
+							entityId: task.id,
+							type: EmployeeNotificationTypeEnum.ASSIGNMENT,
+							organizationId,
+							tenantId,
+							receiverEmployeeId: member.id,
+							sentByEmployeeId: user?.employeeId
+						},
+						NotificationActionTypeEnum.Assigned,
+						task.title,
+						user?.name
+					);
+				})
+			);
+		} catch (error) {
+			console.error('Error publishing CreateSubscriptionEvent:', error);
+		}
+	}
+
+	/**
+	 * Retrieves a task by its ID and includes optional related data.
+	 *
+	 * @param id The unique identifier of the task.
+	 * @param params Additional parameters for fetching task details, including related entities.
+	 * @returns A Promise that resolves to the task entity.
+	 */
+	async findById(id: ID, params: GetTaskByIdDTO): Promise<ITask> {
+		const task = await this.findOneByIdString(id, params);
+
+		// Include the root epic if requested
+		if (params.includeRootEpic && task) {
+			task.rootEpic = await this.findParentUntilEpic(task.id);
+		}
+
+		// Register the last visited at date for the current employee
+		try {
+			await this._employeeRecentVisitService.emitSaveEmployeeRecentVisitEvent<Task>(
+				BaseEntityEnum.Task,
+				task.id,
+				task,
+				task.organizationId,
+				task.tenantId
+			);
+		} catch (error) {
+			console.error('[Task] Error emitting employee recent visit event:', error);
+		}
+
+		return task;
+	}
+
+	/**
+	 * Retrieves a paginated list of tasks, with optional advanced filters applied.
+	 *
+	 * @param options - Pagination options including limit, page, and sorting.
+	 * @param filters - Optional filters for advanced task filtering.
+	 * @returns A promise that resolves to a paginated list of tasks.
+	 * @throws If an error occurs during the retrieval process.
+	 */
+	async findAll(options: BaseQueryDTO<Task> & IAdvancedTaskFiltering): Promise<IPagination<Task>> {
+		try {
+			const { filters } = options;
+			let advancedFilters: FindOptionsWhere<Task> = {};
+			if (filters) {
+				advancedFilters = this.buildAdvancedWhereCondition(filters, options.where);
+			}
+
+			return super.findAll({ ...options, where: { ...advancedFilters, ...options.where } });
+		} catch (error) {
+			console.log(error);
+			throw new BadRequestException(error);
+		}
+	}
+
+	/**
+	 * Deletes a task on behalf of the current user.
+	 *
+	 * The route also admits ORG_TASK_EDIT so that a team manager, whose role holds no task-delete
+	 * permission, reaches this check. Without ALL_ORG_EDIT or ORG_TASK_DELETE, the caller must manage one
+	 * of the task's teams that belongs to the task's organization.
+	 *
+	 * @param id - The task to delete
+	 * @returns The result of the deletion
+	 * @throws ForbiddenException when the caller may not delete that task
+	 */
+	async deleteTask(id: ID): Promise<DeleteResult> {
+		if (!RequestContext.hasAnyPermission([PermissionsEnum.ALL_ORG_EDIT, PermissionsEnum.ORG_TASK_DELETE])) {
+			const employeeId = RequestContext.currentEmployeeId();
+			const { organizationId, teams = [] } = await this.findOneByIdString(id, { relations: { teams: true } });
+
+			// Task writes only check that a linked team is in the same tenant, so a task can reference a team
+			// of another organization. Only teams of the task's own organization count, and a task without
+			// an organization grants nothing.
+			const teamIds = isNotEmpty(organizationId)
+				? teams.filter((team) => team.organizationId === organizationId).map((team) => team.id)
+				: [];
+			const isTeamManager =
+				isNotEmpty(employeeId) &&
+				(await this._managedEmployeeService.isManagerOfTeamsOrProjects(employeeId, teamIds));
+
+			if (!isTeamManager) {
+				throw new ForbiddenException('You can only delete a task of a team you manage.');
+			}
+		}
+
+		// A hard delete leaves nothing to read afterwards, so the row the event carries is read first. A task that
+		// does not exist is a delete that removes nothing, as before; a read that FAILS stops the delete, so a task
+		// is never removed without its DELETED event.
+		let task: Task | null = null;
+		try {
+			task = await this.findOneByIdString(id);
+		} catch (error) {
+			if (!(error instanceof NotFoundException)) {
+				throw error;
+			}
+		}
+
+		const result = await this.delete(id);
+
+		if (task && result?.affected) {
+			this.publishTaskDeleted(task);
+		}
+
+		return result;
+	}
+
+	/**
+	 * Soft-deletes a task (`DELETE /tasks/:id/soft`, GraphQL `softDeleteTask`) and publishes
+	 * `TaskEvent` `DELETED` for it, as a hard delete does.
+	 *
+	 * @param id - The task to soft-delete
+	 * @param options - Find options for the lookup
+	 * @param saveOptions - Save options for the write
+	 * @returns The soft-deleted task
+	 */
+	public async softRemove(id: ID, options?: IFindOneOptions<Task>, saveOptions?: SaveOptions): Promise<Task> {
+		const task = await super.softRemove(id, options, saveOptions);
+
+		if (task) {
+			this.publishTaskDeleted(task);
+		}
+
+		return task;
+	}
+
+	/**
+	 * Publishes `TaskEvent` `DELETED` for a task that was removed (hard or soft), so that integrations
+	 * that mirror tasks elsewhere (Ever Works, GitHub, SIM workflows) learn about the removal the way they
+	 * learn about a create or an update.
+	 *
+	 * The event's `input` carries the task's scope (`tenantId`, `organizationId`, `projectId`): existing
+	 * `TaskEvent` subscribers read it before they switch on the event type. Publishing never fails the
+	 * delete: the row is already gone when this runs.
+	 *
+	 * @param task - The removed task
+	 */
+	private publishTaskDeleted(task: Task): void {
+		if (!this._domainEventBus) {
+			return;
+		}
+		const logFailure = (error: unknown) =>
+			console.error(`Failed to publish the deleted event of task ${task?.id}:`, (error as Error)?.message);
+		try {
+			const ctx = RequestContext.currentRequestContext();
+			const { tenantId, organizationId, projectId } = task;
+			// `publish` is async: a rejection is caught here as well, never left unhandled after the delete.
+			Promise.resolve(
+				this._domainEventBus.publish(
+					new TaskEvent(ctx, task, BaseEntityEventTypeEnum.DELETED, {
+						tenantId,
+						organizationId,
+						projectId
+					} as ITaskUpdateInput)
+				)
+			).catch(logFailure);
+		} catch (error) {
+			logFailure(error);
+		}
+	}
+
+	/**
+	 * Recursively searches for the parent epic of a given task (issue) using a SQL recursive query.
+	 *
+	 * @param issueId The ID of the task (issue) to start the search from.
+	 * @returns A Promise that resolves to the epic task if found, otherwise null.
+	 */
+	async findParentUntilEpic(issueId: ID): Promise<Task | null> {
+		switch (this.ormType) {
+			case MultiORMEnum.MikroORM: {
+				const knex = this.mikroOrmRepository.getKnex();
+				const result = await knex.raw(
+					p(`
+					WITH RECURSIVE IssueHierarchy AS (
+						SELECT *
+						FROM task
+						WHERE id = ?
+					UNION ALL
+						SELECT i.*
+						FROM task i
+						INNER JOIN IssueHierarchy ih ON i.id = ih."parentId"
+					)
+					SELECT *
+					FROM IssueHierarchy
+					WHERE "issueType" = 'Epic'
+					LIMIT 1;
+				`),
+					[issueId]
+				);
+				const items = result.rows || result;
+				return items.length > 0 ? items[0] : null;
+			}
+			case MultiORMEnum.TypeORM:
+			default: {
+				// TypeORM's `query()` hands the parameters straight to the driver, so the placeholder
+				// syntax is dialect-specific: PostgreSQL uses `$1`, while SQLite/better-sqlite3 and
+				// MySQL use `?`. `$1` on better-sqlite3 is parsed as a *named* parameter, so binding
+				// a positional array throws "RangeError: Too many parameter values were provided"
+				// and every `GET /tasks/:id?includeRootEpic=true` fails on SQLite (demo) instances.
+				const idPlaceholder = isPostgres() ? '$1' : '?';
+
+				// Define the recursive SQL query to find the parent epic
+				const query = p(`
+					WITH RECURSIVE IssueHierarchy AS (
+						SELECT *
+						FROM task
+						WHERE id = ${idPlaceholder}
+					UNION ALL
+						SELECT i.*
+						FROM task i
+						INNER JOIN IssueHierarchy ih ON i.id = ih."parentId"
+					)
+					SELECT *
+					FROM IssueHierarchy
+					WHERE "issueType" = 'Epic'
+					LIMIT 1;
+				`);
+
+				// Execute the raw SQL query with the issueId parameter
+				const result = await this.typeOrmRepository.query(query, [issueId]);
+
+				// Return the first epic task found or null if no epic is found
+				return result.length > 0 ? result[0] : null;
+			}
+		}
+	}
+
+	/**
+	 * GET my tasks
+	 *
+	 * @param options
+	 * @returns
+	 */
+	async getMyTasks(options: BaseQueryDTO<Task>) {
+		return await this.getEmployeeTasks(options);
+	}
+
+	/**
+	 * Case-insensitive "contains" filters on task title / prefix for the MikroORM task list queries
+	 * (`$ilike` is PostgreSQL-only, see `mikroOrmContains`).
+	 */
+	private mikroOrmTitlePrefixFilters(title?: string, prefix?: string): Record<string, unknown> {
+		return {
+			...(isNotEmpty(title) ? { title: mikroOrmContains(title) } : {}),
+			...(isNotEmpty(prefix) ? { prefix: mikroOrmContains(prefix) } : {})
+		};
+	}
+
+	/**
+	 * Resolves the employee whose tasks a member-filtered list returns, or null for no member filter.
+	 *
+	 * A CHANGE_SELECTED_EMPLOYEE holder gets the `members.id` they asked for. Anyone else keeps their own
+	 * tasks, unless they ask for a member they manage in a team of the requested organization.
+	 *
+	 * @param where - The list query's where clause, as the client sent it
+	 * @returns The employee to filter the tasks by, or null
+	 */
+	private async resolveMemberFilter(where: FindOptionsWhere<Task>): Promise<ID | null> {
+		const { members, organizationId } = where;
+		const requestedId = isNotEmpty(members) && isNotEmpty(members['id']) ? members['id'] : null;
+
+		if (RequestContext.hasPermission(PermissionsEnum.CHANGE_SELECTED_EMPLOYEE)) {
+			return requestedId;
+		}
+
+		// A repeated or nested query value is not an id: it is never looked up and the caller keeps their own tasks
+		const canManageRequested =
+			typeof requestedId === 'string' &&
+			isUUID(requestedId) &&
+			typeof organizationId === 'string' &&
+			(await this._managedEmployeeService.canManageEmployee(requestedId, undefined, organizationId));
+
+		return canManageRequested ? requestedId : RequestContext.currentEmployeeId();
+	}
+
+	/**
+	 * Find employee tasks
+	 *
+	 * @param options - Pagination options including limit, page, and sorting.
+	 * @param filters - Optional filters for advanced task filtering.
+	 * @returns
+	 */
+	async getEmployeeTasks(options: BaseQueryDTO<Task> & IAdvancedTaskFiltering) {
+		// Builds its own query, so the check in the CRUD read methods never runs: assert the
+		// sensitive-relation table on the client-supplied relations before anything is loaded.
+		this.assertRelationsPermitted(options);
+
+		try {
+			switch (this.ormType) {
+				case MultiORMEnum.MikroORM: {
+					const { where, filters } = options;
+					const {
+						status,
+						title,
+						prefix,
+						isDraft,
+						isScreeningTask = false,
+						organizationSprintId = null
+					} = where;
+					const { organizationId, projectId } = where;
+					const tenantId = RequestContext.currentTenantId();
+
+					const mikroWhere: any = { tenantId, organizationId, isScreeningTask };
+					if (isNotEmpty(projectId)) mikroWhere.projectId = projectId;
+					if (isNotEmpty(status)) mikroWhere.status = status;
+					if (isNotEmpty(isDraft)) mikroWhere.isDraft = isDraft;
+					Object.assign(mikroWhere, this.mikroOrmTitlePrefixFilters(title as string, prefix as string));
+					if (isNotEmpty(organizationSprintId) && !isUUID(organizationSprintId)) {
+						mikroWhere.organizationSprintId = null;
+					}
+
+					const employeeId = await this.resolveMemberFilter(where);
+
+					if (isNotEmpty(employeeId)) {
+						mikroWhere.$or = [{ members: { id: employeeId } }, { teams: { members: { employeeId } } }];
+					}
+
+					const [items, total] = await this.mikroOrmRepository.findAndCount(mikroWhere, {
+						...(options.relations ? { populate: Object.keys(options.relations) as any[] } : {}),
+						...('skip' in options
+							? {
+									offset: (options.take || 10) * (options.skip - 1),
+									limit: options.take || 10
+							  }
+							: {})
+					});
+					return { items: items.map((e) => this.serialize(e)) as Task[], total };
+				}
+				case MultiORMEnum.TypeORM:
+				default: {
+					const { where, filters } = options;
+					const {
+						status,
+						title,
+						prefix,
+						isDraft,
+						isScreeningTask = false,
+						organizationSprintId = null
+					} = where;
+					const { organizationId, projectId } = where;
+					const employeeId = await this.resolveMemberFilter(where);
+
+					const query = this.typeOrmRepository.createQueryBuilder(this.tableName);
+					query.innerJoin(`${query.alias}.members`, 'members');
+					/**
+					 * If find options
+					 */
+					if (isNotEmpty(options)) {
+						if ('skip' in options) {
+							query.setFindOptions({
+								skip: (options.take || 10) * (options.skip - 1),
+								take: options.take || 10
+							});
+						}
+						query.setFindOptions({
+							...(options.relations ? { relations: parseFindOptionsRelations(options.relations) } : {})
+						});
+					}
+
+					// Apply advanced filters
+					if (filters) {
+						const advancedWhere = this.buildAdvancedWhereCondition(filters, where);
+						query.setFindOptions({ where: advancedWhere });
+					}
+
+					query.andWhere((qb: SelectQueryBuilder<Task>) => {
+						const subQuery = qb.subQuery();
+						subQuery.select(p('"task_employee"."taskId"')).from(p('task_employee'), p('task_employee'));
+
+						if (isNotEmpty(employeeId)) {
+							subQuery.andWhere(p('"task_employee"."employeeId" = :employeeId'), { employeeId });
+						}
+						return p('"task_members"."taskId" IN ') + subQuery.distinct(true).getQuery();
+					});
+					query.andWhere(
+						new Brackets((qb: WhereExpressionBuilder) => {
+							const tenantId = RequestContext.currentTenantId();
+							qb.andWhere(p(`"${query.alias}"."organizationId" = :organizationId`), { organizationId });
+							qb.andWhere(p(`"${query.alias}"."tenantId" = :tenantId`), { tenantId });
+						})
+					);
+					query.andWhere(
+						new Brackets((qb: WhereExpressionBuilder) => {
+							if (isNotEmpty(projectId)) {
+								qb.andWhere(p(`"${query.alias}"."projectId" = :projectId`), { projectId });
+							}
+							if (isNotEmpty(status)) {
+								qb.andWhere(p(`"${query.alias}"."status" = :status`), {
+									status
+								});
+							}
+							if (isNotEmpty(isDraft)) {
+								qb.andWhere(p(`"${query.alias}"."isDraft" = :isDraft`), {
+									isDraft
+								});
+							}
+							if (isNotEmpty(title)) {
+								qb.andWhere(p(`"${query.alias}"."title" ${LIKE_OPERATOR} :title`), {
+									title: `%${title}%`
+								});
+							}
+							if (isNotEmpty(prefix)) {
+								qb.andWhere(p(`"${query.alias}"."prefix" ${LIKE_OPERATOR} :prefix`), {
+									prefix: `%${prefix}%`
+								});
+							}
+							if (isNotEmpty(organizationSprintId) && !isUUID(organizationSprintId)) {
+								qb.andWhere(p(`"${query.alias}"."organizationSprintId" IS NULL`));
+							}
+
+							qb.andWhere(p(`"${query.alias}"."isScreeningTask" = :isScreeningTask`), {
+								isScreeningTask
+							});
+						})
+					);
+
+					console.log('query.getSql', query.getSql());
+					const [items, total] = await query.getManyAndCount();
+					return { items, total };
+				}
+			}
+		} catch (error) {
+			console.log(error);
+			throw new BadRequestException(error);
+		}
+	}
+
+	/**
+	 * GET all tasks by employee
+	 *
+	 * @param employeeId - The employee ID for whom retrieve tasks
+	 * @param options - Pagination options including limit, page, and sorting.
+	 * @param filters - Optional filters for advanced task filtering.
+	 * @returns
+	 */
+	async getAllTasksByEmployee(employeeId: IEmployee['id'], options: BaseQueryDTO<Task> & IAdvancedTaskFiltering) {
+		// Builds its own query, so the check in the CRUD read methods never runs: assert the
+		// sensitive-relation table on the client-supplied relations before anything is loaded.
+		this.assertRelationsPermitted(options);
+
+		try {
+			switch (this.ormType) {
+				case MultiORMEnum.MikroORM: {
+					const { isScreeningTask = false } = options.where;
+					const tenantId = RequestContext.currentTenantId();
+
+					// MikroORM: Use members relation filter (simplified vs TypeORM subquery approach)
+					const mikroWhere: any = {
+						tenantId,
+						isScreeningTask,
+						$or: [{ members: { id: employeeId } }, { teams: { members: { employeeId } } }]
+					};
+
+					if (isNotEmpty(options.where)) {
+						Object.assign(mikroWhere, options.where);
+					}
+
+					const items = await this.mikroOrmRepository.find(mikroWhere, {
+						...(options.relations ? { populate: Object.keys(options.relations) as any[] } : {})
+					});
+					return items.map((e) => this.serialize(e)) as Task[];
+				}
+				case MultiORMEnum.TypeORM:
+				default: {
+					const query = this.typeOrmRepository.createQueryBuilder(this.tableName);
+					query.leftJoin(`${query.alias}.members`, 'members');
+					query.leftJoin(`${query.alias}.teams`, 'teams');
+					const { isScreeningTask = false } = options.where;
+					const { filters } = options;
+
+					// Apply advanced filters
+					if (filters) {
+						const advancedWhere = this.buildAdvancedWhereCondition(filters, options.where);
+						query.setFindOptions({ where: advancedWhere });
+					}
+
+					/**
+					 * If additional options found
+					 */
+					query.setFindOptions({
+						...(isNotEmpty(options) &&
+							isNotEmpty(options.where) && {
+								where: options.where
+							}),
+						...(isNotEmpty(options) &&
+							isNotEmpty(options.relations) && {
+								relations: parseFindOptionsRelations(options.relations)
+							})
+					});
+
+					query.andWhere(
+						new Brackets((qb: WhereExpressionBuilder) => {
+							const tenantId = RequestContext.currentTenantId();
+							qb.andWhere(p(`"${query.alias}"."tenantId" = :tenantId`), {
+								tenantId
+							});
+						})
+					);
+					query.andWhere(
+						new Brackets((web: WhereExpressionBuilder) => {
+							web.andWhere((qb: SelectQueryBuilder<Task>) => {
+								const subQuery = qb.subQuery();
+								subQuery
+									.select(p('"task_employee"."taskId"'))
+									.from(p('task_employee'), p('task_employee'));
+								subQuery.andWhere(p('"task_employee"."employeeId" = :employeeId'), { employeeId });
+								return p(`"task_members"."taskId" IN (${subQuery.distinct(true).getQuery()})`);
+							});
+							web.orWhere((qb: SelectQueryBuilder<Task>) => {
+								const subQuery = qb.subQuery();
+								subQuery.select(p('"task_team"."taskId"')).from(p('task_team'), p('task_team'));
+								subQuery.leftJoin(
+									'organization_team_employee',
+									'organization_team_employee',
+									p(
+										'"organization_team_employee"."organizationTeamId" = "task_team"."organizationTeamId"'
+									)
+								);
+								subQuery.andWhere(p('"organization_team_employee"."employeeId" = :employeeId'), {
+									employeeId
+								});
+								return p(`"task_teams"."taskId" IN (${subQuery.distinct(true).getQuery()})`);
+							});
+						})
+					);
+
+					query.andWhere(p(`"${query.alias}"."isScreeningTask" = :isScreeningTask`), {
+						isScreeningTask
+					});
+
+					return await query.getMany();
+				}
+			}
+		} catch (error) {
+			throw new BadRequestException(error);
+		}
+	}
+
+	/**
+	 * GET team tasks
+	 *
+	 * @param options - Pagination options including limit, page, and sorting.
+	 * @param filters - Optional filters for advanced task filtering.
+	 * @returns
+	 */
+	async findTeamTasks(options: BaseQueryDTO<Task> & IAdvancedTaskFiltering): Promise<IPagination<ITask>> {
+		// Builds its own query, so the check in the CRUD read methods never runs: assert the
+		// sensitive-relation table on the client-supplied relations before anything is loaded.
+		this.assertRelationsPermitted(options);
+
+		try {
+			switch (this.ormType) {
+				case MultiORMEnum.MikroORM: {
+					const { where, filters } = options;
+					const {
+						status,
+						teams = [],
+						title,
+						prefix,
+						isDraft,
+						isScreeningTask = false,
+						organizationSprintId = null
+					} = where;
+					const { organizationId, projectId, members } = where;
+					const tenantId = RequestContext.currentTenantId();
+
+					const mikroWhere: any = { tenantId, organizationId, isScreeningTask };
+					if (isNotEmpty(projectId) && isEmpty(teams)) mikroWhere.projectId = projectId;
+					if (isNotEmpty(status)) mikroWhere.status = status;
+					if (isNotEmpty(isDraft)) mikroWhere.isDraft = isDraft;
+					Object.assign(mikroWhere, this.mikroOrmTitlePrefixFilters(title as string, prefix as string));
+					if (isNotEmpty(organizationSprintId) && !isUUID(organizationSprintId)) {
+						mikroWhere.organizationSprintId = null;
+					}
+					if (isNotEmpty(teams)) {
+						mikroWhere.teams = { id: { $in: teams as ID[] } };
+					}
+					// Same rule as the TypeORM branch: only a CHANGE_SELECTED_EMPLOYEE holder may pick the
+					// employee; everyone else is limited to the teams they are a member of.
+					const canChangeEmployee = RequestContext.hasPermission(PermissionsEnum.CHANGE_SELECTED_EMPLOYEE);
+					let employeeId: ID | null = RequestContext.currentEmployeeId();
+					if (canChangeEmployee) {
+						employeeId = isNotEmpty(members) && isNotEmpty(members['id']) ? members['id'] : null;
+					}
+					// A caller who may not act for other employees and has no employee record belongs to no
+					// team: without this, the missing filter listed every team task of the organization. An
+					// organization-wide viewer keeps the access their role gives them (same carve-out as
+					// ManagedEmployeeService.filterAccessibleEmployeeIds, #10249).
+					if (
+						!canChangeEmployee &&
+						!isNotEmpty(employeeId) &&
+						!RequestContext.hasPermission(PermissionsEnum.ALL_ORG_VIEW)
+					) {
+						return { items: [], total: 0 };
+					}
+					if (isNotEmpty(employeeId)) {
+						mikroWhere.teams = { ...mikroWhere.teams, members: { employeeId } };
+					}
+
+					// The advanced filters (projects, tags, statuses, members, ...) were only applied by the
+					// TypeORM branch; here they were read and dropped. Build the same TypeORM where and
+					// translate it, merging the `teams` predicate with the team scoping above.
+					if (filters) {
+						const { where: advancedWhere } = parseTypeORMFindToMikroOrm<Task>({
+							where: this.buildAdvancedWhereCondition(filters, where)
+						});
+						const { teams: advancedTeams, ...advancedRest } = advancedWhere as any;
+						Object.assign(mikroWhere, advancedRest);
+						if (advancedTeams) {
+							mikroWhere.teams = { ...mikroWhere.teams, ...advancedTeams };
+						}
+					}
+
+					// With a project and teams, the project's tasks are listed alongside the team's, as in the TypeORM
+					// branch. Every other condition stays at the top level, so it applies to both.
+					if (isNotEmpty(projectId) && isNotEmpty(teams)) {
+						mikroWhere.$or = [{ teams: mikroWhere.teams }, { projectId }];
+						delete mikroWhere.teams;
+					}
+
+					const [items, total] = await this.mikroOrmRepository.findAndCount(mikroWhere, {
+						...(options.relations ? { populate: Object.keys(options.relations) as any[] } : {}),
+						...(options.order ? { orderBy: options.order as any } : {}),
+						...('skip' in options
+							? {
+									offset: (options.take || 10) * (options.skip - 1),
+									limit: options.take || 10
+							  }
+							: {})
+					});
+					return { items: items.map((e) => this.serialize(e)) as ITask[], total };
+				}
+				case MultiORMEnum.TypeORM:
+				default: {
+					const { where, filters } = options;
+
+					const {
+						status,
+						teams = [],
+						title,
+						prefix,
+						isDraft,
+						isScreeningTask = false,
+						organizationSprintId = null
+					} = where;
+					const { organizationId, projectId, members } = where;
+
+					// See the MikroORM branch: no employee record and no CHANGE_SELECTED_EMPLOYEE means no team,
+					// unless the caller is an organization-wide viewer
+					if (
+						!RequestContext.hasPermission(PermissionsEnum.CHANGE_SELECTED_EMPLOYEE) &&
+						!isNotEmpty(RequestContext.currentEmployeeId()) &&
+						!RequestContext.hasPermission(PermissionsEnum.ALL_ORG_VIEW)
+					) {
+						return { items: [], total: 0 };
+					}
+
+					const query = this.typeOrmRepository.createQueryBuilder(this.tableName);
+					query.leftJoin(`${query.alias}.teams`, 'teams');
+
+					/**
+					 * If find options
+					 */
+					if (isNotEmpty(options)) {
+						if ('skip' in options) {
+							query.setFindOptions({
+								skip: (options.take || 10) * (options.skip - 1),
+								take: options.take || 10
+							});
+						}
+						query.setFindOptions({
+							...(options.select ? { select: parseFindOptionsSelect(options.select) } : {}),
+							...(options.relations ? { relations: parseFindOptionsRelations(options.relations) } : {}),
+							...(options.order ? { order: options.order } : {})
+						});
+					}
+
+					// Apply advanced filters
+					if (filters) {
+						const advancedWhere = this.buildAdvancedWhereCondition(filters, options.where);
+						query.setFindOptions({ where: advancedWhere });
+					}
+
+					const teamTasksCondition = (qb: SelectQueryBuilder<Task>) => {
+						const subQuery = qb.subQuery();
+						subQuery.select(p('"task_team"."taskId"')).from(p('task_team'), p('task_team'));
+						subQuery.leftJoin(
+							'organization_team_employee',
+							'organization_team_employee',
+							p('"organization_team_employee"."organizationTeamId" = "task_team"."organizationTeamId"')
+						);
+						// If user have permission to change employee
+						if (RequestContext.hasPermission(PermissionsEnum.CHANGE_SELECTED_EMPLOYEE)) {
+							if (isNotEmpty(members) && isNotEmpty(members['id'])) {
+								const employeeId = members['id'];
+								subQuery.andWhere(p('"organization_team_employee"."employeeId" = :employeeId'), {
+									employeeId
+								});
+							}
+						} else {
+							// If employee has login and don't have permission to change employee
+							const employeeId = RequestContext.currentEmployeeId();
+							if (isNotEmpty(employeeId)) {
+								subQuery.andWhere(p('"organization_team_employee"."employeeId" = :employeeId'), {
+									employeeId
+								});
+							}
+						}
+						if (isNotEmpty(teams)) {
+							subQuery.andWhere(p(`"${subQuery.alias}"."organizationTeamId" IN (:...teams)`), {
+								teams
+							});
+						}
+						return p(`"task_teams"."taskId" IN `) + subQuery.distinct(true).getQuery();
+					};
+					// With a project and teams, the project's tasks are listed alongside the team's. Keeping both
+					// in one bracket makes the tenant and filter conditions below apply to each.
+					query.andWhere(
+						new Brackets((web: WhereExpressionBuilder) => {
+							web.andWhere(teamTasksCondition);
+							if (isNotEmpty(projectId) && isNotEmpty(teams)) {
+								web.orWhere(p(`"${query.alias}"."projectId" = :projectId`), { projectId });
+							}
+						})
+					);
+					query.andWhere(
+						new Brackets((qb: WhereExpressionBuilder) => {
+							const tenantId = RequestContext.currentTenantId();
+							qb.andWhere(p(`"${query.alias}"."organizationId" = :organizationId`), { organizationId });
+							qb.andWhere(p(`"${query.alias}"."tenantId" = :tenantId`), { tenantId });
+						})
+					);
+					query.andWhere(
+						new Brackets((qb: WhereExpressionBuilder) => {
+							if (isNotEmpty(projectId) && isEmpty(teams)) {
+								qb.andWhere(p(`"${query.alias}"."projectId" = :projectId`), { projectId });
+							}
+							if (isNotEmpty(status)) {
+								qb.andWhere(p(`"${query.alias}"."status" = :status`), {
+									status
+								});
+							}
+							if (isNotEmpty(isDraft)) {
+								qb.andWhere(p(`"${query.alias}"."isDraft" = :isDraft`), {
+									isDraft
+								});
+							}
+							if (isNotEmpty(title)) {
+								qb.andWhere(p(`"${query.alias}"."title" ${LIKE_OPERATOR} :title`), {
+									title: `%${title}%`
+								});
+							}
+							if (isNotEmpty(prefix)) {
+								qb.andWhere(p(`"${query.alias}"."prefix" ${LIKE_OPERATOR} :prefix`), {
+									prefix: `%${prefix}%`
+								});
+							}
+							if (isNotEmpty(organizationSprintId) && !isUUID(organizationSprintId)) {
+								qb.andWhere(p(`"${query.alias}"."organizationSprintId" IS NULL`));
+							}
+
+							qb.andWhere(p(`"${query.alias}"."isScreeningTask" = :isScreeningTask`), {
+								isScreeningTask
+							});
+						})
+					);
+					const [items, total] = await query.getManyAndCount();
+					return { items, total };
+				}
+			}
+		} catch (error) {
+			throw new BadRequestException(error);
+		}
+	}
+
+	/**
+	 * GET tasks by pagination with filtering options.
+	 *
+	 * @param options The pagination and filtering parameters.
+	 * @param filters - Optional filters for advanced task filtering.
+	 * @returns A Promise that resolves to a paginated list of tasks.
+	 */
+	public async pagination(options: BaseQueryDTO<Task> & IAdvancedTaskFiltering): Promise<IPagination<ITask>> {
+		const filters = options?.filters;
+		const where = options?.where;
+
+		// Check if there are any filters in the options
+		if (where) {
+			const { isScreeningTask = false } = where;
+
+			// Apply filters for task title with like operator
+			if (where.title) {
+				options.where.title = Raw((alias) => `${alias} ${LIKE_OPERATOR} :title`, { title: `%${where.title}%` });
+			}
+
+			// Apply filters for task prefix with like operator
+			if (where.prefix) {
+				options.where.prefix = Raw((alias) => `${alias} ${LIKE_OPERATOR} :prefix`, {
+					prefix: `%${where.prefix}%`
+				});
+			}
+
+			// Apply filters for isDraft, setting null if not a boolean. The query DTO only converts "true" /
+			// "false", so keep accepting the "1" / "0" encodings API clients may send.
+			const isDraft: unknown = where.isDraft; // typed as boolean, but the wire value may be '1' / '0'
+			if (isDraft === '1' || isDraft === '0') {
+				options.where.isDraft = isDraft === '1';
+			} else if (isDraft !== undefined && !isBoolean(isDraft)) {
+				options.where.isDraft = IsNull();
+			}
+
+			// Apply filters for organizationSprintId, setting null if not a valid UUID
+			if (where.organizationSprintId && !isUUID(where.organizationSprintId)) {
+				options.where.organizationSprintId = IsNull();
+			}
+
+			// Apply filters for teams, ensuring it uses In for array comparison
+			if (where.teams) {
+				options.where.teams = {
+					id: In(where.teams as ID[])
+				};
+			}
+
+			// Apply filter for isScreeningTask
+			where.isScreeningTask = isScreeningTask;
+		}
+
+		// Apply Advanced filters
+		let advancedFilters: FindOptionsWhere<Task> = {};
+		if (filters) {
+			advancedFilters = this.buildAdvancedWhereCondition(filters, where);
+		}
+
+		// Call the base paginate method
+		return await super.paginate({ ...options, where: { ...advancedFilters, ...where } });
+	}
+
+	/**
+	 * The project a task moves to, read in the caller's tenant and the task's organization: whether it is one
+	 * of that organization's projects, and its task-number prefix by the rule the create path uses (the first
+	 * three characters of its name, or `null` for a project without a name). Without a tenant or an
+	 * organization to read it in, the answer is "not one of them"; a failed read is thrown, so the update fails
+	 * rather than moving the task to a project nobody checked.
+	 *
+	 * @param projectId The project the task moves to.
+	 * @param tenantId The caller's tenant.
+	 * @param organizationId The task's organization (after the update).
+	 */
+	private async findDestinationProject(
+		projectId: ID,
+		tenantId: ID,
+		organizationId: ID
+	): Promise<{ exists: boolean; prefix?: string | null }> {
+		if (!tenantId || !organizationId) {
+			return { exists: false };
+		}
+		const project = await this.typeOrmRepository.manager.findOne(OrganizationProject, {
+			where: { id: projectId, tenantId, organizationId },
+			select: { id: true, name: true }
+		});
+		if (!project) {
+			return { exists: false };
+		}
+		return { exists: true, prefix: project.name?.slice(0, 3) || null };
+	}
+
+	/**
+	 * GET maximum task number by project filter
+	 *
+	 * @param options The filtering options including tenant, organization, and project details.
+	 * @param withDeleted Also count soft-deleted tasks: they keep their number in the `taskNumber` unique
+	 * index, so a caller that stores `max + 1` needs it. The max-number read routes leave it off.
+	 * @returns A Promise that resolves to the maximum task number for the given project.
+	 */
+	public async getMaxTaskNumberByProject(
+		options: IGetTaskOptions,
+		{ withDeleted = false }: { withDeleted?: boolean } = {}
+	): Promise<number> {
+		try {
+			// Extract tenantId from context or options
+			const tenantId = RequestContext.currentTenantId() || options.tenantId;
+			const { organizationId, projectId } = options;
+
+			switch (this.ormType) {
+				case MultiORMEnum.MikroORM: {
+					const mikroWhere: any = { tenantId, organizationId };
+					if (isNotEmpty(projectId)) {
+						mikroWhere.projectId = projectId;
+					} else {
+						mikroWhere.projectId = null;
+					}
+					if (withDeleted) {
+						// Soft-deleted rows may predate task numbers, and PostgreSQL sorts NULL first in DESC
+						mikroWhere.number = { $ne: null };
+					}
+
+					const items = await this.mikroOrmRepository.find(mikroWhere, {
+						orderBy: { number: 'DESC' as any },
+						limit: 1,
+						fields: ['number'] as any[],
+						...(withDeleted ? { filters: { [SOFT_DELETABLE_FILTER]: false } } : {})
+					});
+					const maxTaskNumber = items.length > 0 ? (items[0] as any).number || 0 : 0;
+					console.log('get max task number (MikroORM)', maxTaskNumber);
+					return maxTaskNumber;
+				}
+				case MultiORMEnum.TypeORM:
+				default: {
+					// Create a query builder for the Task entity
+					const query = this.typeOrmRepository.createQueryBuilder(this.tableName);
+
+					// Build the query to get the maximum task number
+					query.select(p(`COALESCE(MAX("${query.alias}"."number"), 0)`), 'maxTaskNumber');
+
+					// Apply filters for organization and tenant
+					query.andWhere(
+						new Brackets((qb: WhereExpressionBuilder) => {
+							qb.andWhere(p(`"${query.alias}"."organizationId" = :organizationId`), { organizationId });
+							qb.andWhere(p(`"${query.alias}"."tenantId" = :tenantId`), { tenantId });
+						})
+					);
+
+					// Apply project filter if provided, otherwise check for null
+					if (isNotEmpty(projectId)) {
+						query.andWhere(p(`"${query.alias}"."projectId" = :projectId`), { projectId });
+					} else {
+						query.andWhere(p(`"${query.alias}"."projectId" IS NULL`));
+					}
+
+					if (withDeleted) {
+						query.withDeleted();
+					}
+
+					// Execute the query and parse the result to a number
+					const result = await query.getRawOne();
+					const maxTaskNumber = parseInt(result.maxTaskNumber, 10);
+					console.log('get max task number', maxTaskNumber);
+
+					return maxTaskNumber;
+				}
+			}
+		} catch (error) {
+			// Log the error and throw a detailed exception
+			console.log(`Error fetching max task number: ${error.message}`, error.stack);
+			throw new HttpException({ message: 'Failed to get the max task number', error }, HttpStatus.BAD_REQUEST);
+		}
+	}
+
+	/**
+	 * One task of the caller's tenant and organization, by its human key: the project prefix and the number.
+	 *
+	 * The key is what a person reads off a board or types into a link (`FUL-12`), and the create handler is
+	 * what writes it: the prefix is the first three characters of the project's name and the number is one
+	 * above that project's highest. So the number is unique within a project, but the prefix is not unique
+	 * across projects — "Gauzy" and "Gauzy Teams" both file under `Gau`. A caller that states the project
+	 * reads exactly one row; a caller that does not and hits two is refused rather than handed whichever
+	 * row the store returned first, because a node read that silently picks one is a wrong answer with no
+	 * way to tell it is one.
+	 *
+	 * The tenant is the credential's and the organization is the one the caller names (the REST twin
+	 * validates it against the caller's memberships, the GraphQL field reads it from the credential), so the
+	 * read can never reach another organization's board.
+	 *
+	 * @param options The tenant and organization, the prefix and number, and optionally the project.
+	 * @returns The task.
+	 * @throws NotFoundException when no task carries that key in the caller's scope.
+	 * @throws BadRequestException when the prefix and number name more than one task and no project was stated.
+	 */
+	public async findByNumber(options: {
+		tenantId?: ID;
+		organizationId?: ID;
+		prefix: string;
+		number: number;
+		projectId?: ID | null;
+	}): Promise<Task> {
+		const tenantId = RequestContext.currentTenantId() || options.tenantId;
+		const { organizationId, prefix, number, projectId } = options;
+
+		// Both scope members are required: an absent one would drop out of the criterion and widen the read
+		// to every organization of the tenant, or to every tenant.
+		if (!tenantId || !organizationId) {
+			throw new BadRequestException('TASK_SCOPE_REQUIRED: a task is read by its number within one organization.');
+		}
+
+		const where: FindOptionsWhere<Task> = {
+			tenantId,
+			organizationId,
+			prefix,
+			number,
+			...(isNotEmpty(projectId) ? { projectId } : {})
+		} as FindOptionsWhere<Task>;
+
+		// Two rows are enough to tell "one" from "more than one"; reading the rest would only cost.
+		const rows = await this.find({ where, take: 2 } as never);
+
+		if (rows.length === 0) {
+			throw new NotFoundException(`TASK_NOT_FOUND: no task ${prefix}-${number} in this organization.`);
+		}
+
+		if (rows.length > 1) {
+			throw new BadRequestException(
+				`TASK_NUMBER_AMBIGUOUS: more than one project files tasks under ${prefix}-${number}; state the project.`
+			);
+		}
+
+		return rows[0];
+	}
+
+	/**
+	 * Unassign employee from team task
+	 * @param employeeId
+	 * @param organizationTeamId
+	 */
+	public async unassignEmployeeFromTeamTasks(employeeId: string, organizationTeamId?: string) {
+		try {
+			const tenantId = RequestContext.currentTenantId();
+
+			switch (this.ormType) {
+				case MultiORMEnum.MikroORM: {
+					// MikroORM: Use simplified relation-based filtering
+					const mikroWhere: any = {
+						tenantId,
+						$or: [{ members: { id: employeeId } }, { teams: { members: { employeeId } } }]
+					};
+
+					if (organizationTeamId) {
+						mikroWhere.teams = { id: organizationTeamId };
+					}
+
+					const tasks = await this.mikroOrmRepository.find(mikroWhere, {
+						populate: ['teams', 'members'] as any[]
+					});
+
+					const serializedTasks = tasks.map((e) => this.serialize(e)) as Task[];
+
+					serializedTasks.forEach((task) => {
+						if (task.teams?.length) {
+							task.members = task.members.filter((member) => member.id !== employeeId);
+						}
+					});
+
+					await this.saveMany(serializedTasks);
+					break;
+				}
+				case MultiORMEnum.TypeORM:
+				default: {
+					const query = this.typeOrmRepository.createQueryBuilder(this.tableName);
+
+					// Use unique alias to avoid conflict with 'teams' used later
+					if (organizationTeamId) {
+						query.leftJoinAndSelect(
+							`${query.alias}.teams`,
+							'teamFilter',
+							'teamFilter.id = :organizationTeamId',
+							{
+								organizationTeamId
+							}
+						);
+					} else {
+						query.leftJoinAndSelect(`${query.alias}.teams`, 'teamFilter');
+					}
+
+					query.andWhere(
+						new Brackets((qb: WhereExpressionBuilder) => {
+							qb.andWhere(p(`"${query.alias}"."tenantId" = :tenantId`), { tenantId });
+						})
+					);
+
+					query.andWhere(
+						new Brackets((web: WhereExpressionBuilder) => {
+							web.andWhere((qb: SelectQueryBuilder<Task>) => {
+								const subQuery = qb.subQuery();
+								subQuery
+									.select(p('"task_employee"."taskId"'))
+									.from(p('task_employee'), p('task_employee'));
+								subQuery.andWhere(p('"task_employee"."employeeId" = :employeeId'), { employeeId });
+								return p(`"${query.alias}"."id" IN (${subQuery.distinct(true).getQuery()})`);
+							});
+							web.orWhere((qb: SelectQueryBuilder<Task>) => {
+								const subQuery = qb.subQuery();
+								subQuery.select(p('"task_team"."taskId"')).from(p('task_team'), p('task_team'));
+								subQuery.leftJoin(
+									'organization_team_employee',
+									'organization_team_employee',
+									p(
+										'"organization_team_employee"."organizationTeamId" = "task_team"."organizationTeamId" AND "organization_team_employee"."deletedAt" IS NULL'
+									)
+								);
+								subQuery.andWhere(p('"organization_team_employee"."employeeId" = :employeeId'), {
+									employeeId
+								});
+								return p(`"${query.alias}"."id" IN (${subQuery.distinct(true).getQuery()})`);
+							});
+						})
+					);
+
+					// If unassigned for specific team
+					if (organizationTeamId) {
+						query.andWhere((qb: SelectQueryBuilder<Task>) => {
+							const subQuery = qb.subQuery();
+							subQuery.select(p('"task_team"."taskId"')).from(p('task_team'), p('task_team'));
+							subQuery.andWhere(p('"task_team"."organizationTeamId" = :organizationTeamId'), {
+								organizationTeamId
+							});
+							return p(`"${query.alias}"."id" IN (${subQuery.distinct(true).getQuery()})`);
+						});
+					}
+
+					// Find all assigned tasks of employee with relations
+					// Use different aliases to avoid conflicts
+					const tasks = await query
+						.leftJoinAndSelect(`${query.alias}.members`, 'taskMembers')
+						.leftJoinAndSelect(`${query.alias}.teams`, 'taskTeams')
+						.getMany();
+
+					// Unassign member from All the Team Tasks
+					tasks.forEach((task) => {
+						if (task.teams?.length) {
+							task.members = task.members.filter((member) => member.id !== employeeId);
+						}
+					});
+
+					// TODO : Unsubscribe employee from task
+
+					// Save updated entities to DB
+					await this.saveMany(tasks);
+					break;
+				}
+			}
+		} catch (error) {
+			throw new BadRequestException(error);
+		}
+	}
+
+	/**
+	 * Retrieves module tasks based on the provided options.
+	 *
+	 * @param options - The pagination options and filters for querying tasks.
+	 * @param filters - Optional filters for advanced task filtering.
+	 * @returns A promise that resolves with pagination task items and total count.
+	 */
+	async findModuleTasks(options: BaseQueryDTO<Task> & IAdvancedTaskFiltering): Promise<IPagination<ITask>> {
+		// Builds its own query, so the check in the CRUD read methods never runs: assert the
+		// sensitive-relation table on the client-supplied relations before anything is loaded.
+		this.assertRelationsPermitted(options);
+
+		try {
+			switch (this.ormType) {
+				case MultiORMEnum.MikroORM: {
+					const { where, filters } = options;
+					const {
+						status,
+						modules = [],
+						title,
+						prefix,
+						isDraft,
+						isScreeningTask = false,
+						organizationSprintId = null,
+						organizationId,
+						projectId
+					} = where;
+					const tenantId = RequestContext.currentTenantId() ?? where.tenantId;
+
+					const mikroWhere: any = { tenantId, organizationId, isScreeningTask };
+					if (isNotEmpty(projectId) && isEmpty(modules)) mikroWhere.projectId = projectId;
+					if (isNotEmpty(status)) mikroWhere.status = status;
+					if (isNotEmpty(isDraft)) mikroWhere.isDraft = isDraft;
+					Object.assign(mikroWhere, this.mikroOrmTitlePrefixFilters(title as string, prefix as string));
+					if (isUUID(organizationSprintId)) {
+						mikroWhere.organizationSprintId = organizationSprintId;
+					}
+					if (isNotEmpty(modules)) {
+						mikroWhere.modules = { id: { $in: modules as ID[] } };
+					}
+
+					const [items, total] = await this.mikroOrmRepository.findAndCount(mikroWhere, {
+						...(options.relations ? { populate: Object.keys(options.relations) as any[] } : {}),
+						...(options.order ? { orderBy: options.order as any } : {})
+					});
+					return { items: items.map((e) => this.serialize(e)) as ITask[], total };
+				}
+				case MultiORMEnum.TypeORM:
+				default: {
+					const { where, filters } = options;
+					const {
+						status,
+						modules = [],
+						title,
+						prefix,
+						isDraft,
+						isScreeningTask = false,
+						organizationSprintId = null,
+						organizationId,
+						projectId,
+						members
+					} = where;
+					const tenantId = RequestContext.currentTenantId() ?? where.tenantId;
+
+					// Initialize the query
+					const query = this.typeOrmRepository.createQueryBuilder(this.tableName);
+					query.leftJoin(`${query.alias}.modules`, 'modules');
+
+					// Apply find options if provided
+					if (isNotEmpty(options)) {
+						query.setFindOptions({
+							...(options.select && { select: parseFindOptionsSelect(options.select) }),
+							...(options.relations && { relations: parseFindOptionsRelations(options.relations) }),
+							...(options.order && { order: options.order })
+						});
+					}
+
+					// Apply advanced filters
+					if (filters) {
+						const advancedWhere = this.buildAdvancedWhereCondition(filters, where);
+						query.setFindOptions({ where: advancedWhere });
+					}
+
+					// Filter by project_module_task with a sub query
+					query.andWhere((qb: SelectQueryBuilder<Task>) => {
+						const subQuery = qb
+							.subQuery()
+							.select(p('"pmt"."taskId"')) // Use the alias 'pmt' here
+							.from(p('project_module_task'), 'pmt') // Assign alias 'pmt' to project_module_task
+							.leftJoin(
+								'project_module_employee',
+								'pme',
+								p('"pme"."organizationProjectModuleId" = "pmt"."organizationProjectModuleId"')
+							);
+
+						// Retrieve the employee ID based on the permission
+						const employeeId = RequestContext.hasPermission(PermissionsEnum.CHANGE_SELECTED_EMPLOYEE)
+							? members?.['id']
+							: RequestContext.currentEmployeeId();
+
+						if (isNotEmpty(employeeId)) {
+							subQuery.andWhere(p('"pme"."employeeId" = :employeeId'), { employeeId });
+						}
+						if (isNotEmpty(modules)) {
+							subQuery.andWhere(p(`"pmt"."organizationProjectModuleId" IN (:...modules)`), { modules });
+						}
+
+						return p(`"task_modules"."taskId" IN `) + subQuery.distinct(true).getQuery();
+					});
+
+					// Add organization and tenant filters
+					query.andWhere(
+						new Brackets((qb: WhereExpressionBuilder) => {
+							qb.andWhere(p(`"${query.alias}"."organizationId" = :organizationId`), { organizationId });
+							qb.andWhere(p(`"${query.alias}"."tenantId" = :tenantId`), { tenantId });
+						})
+					);
+
+					// Filter by projectId and modules
+					if (isNotEmpty(projectId) && isEmpty(modules)) {
+						query.andWhere(p(`"${query.alias}"."projectId" = :projectId`), { projectId });
+					}
+
+					// Add additional filters (status, draft, title, etc.)
+					query.andWhere(
+						new Brackets((qb: WhereExpressionBuilder) => {
+							if (isNotEmpty(status)) {
+								qb.andWhere(p(`"${query.alias}"."status" = :status`), { status });
+							}
+							if (isNotEmpty(isDraft)) {
+								qb.andWhere(p(`"${query.alias}"."isDraft" = :isDraft`), { isDraft });
+							}
+							if (isNotEmpty(title)) {
+								qb.andWhere(p(`"${query.alias}"."title" ${LIKE_OPERATOR} :title`), {
+									title: `%${title}%`
+								});
+							}
+							if (isNotEmpty(prefix)) {
+								qb.andWhere(p(`"${query.alias}"."prefix" ${LIKE_OPERATOR} :prefix`), {
+									prefix: `%${prefix}%`
+								});
+							}
+							if (isUUID(organizationSprintId)) {
+								qb.andWhere(p(`"${query.alias}"."organizationSprintId" = :organizationSprintId`), {
+									organizationSprintId
+								});
+							}
+							qb.andWhere(p(`"${query.alias}"."isScreeningTask" = :isScreeningTask`), {
+								isScreeningTask
+							});
+						})
+					);
+
+					const [items, total] = await query.getManyAndCount();
+					return { items, total };
+				}
+			}
+		} catch (error) {
+			console.log('Error while retrieving module tasks', error);
+			throw new BadRequestException(error);
+		}
+	}
+
+	/**
+	 * @description Get tasks by views query
+	 * @param {ID} viewId - View ID
+	 * @returns {Promise<IPagination<ITask>>} A Promise resolved to paginated found tasks and total matching query filters
+	 * @memberof TaskService
+	 */
+	async findTasksByViewQuery(viewId: ID): Promise<IPagination<ITask>> {
+		const tenantId = RequestContext.currentTenantId();
+		try {
+			// Retrieve Task View by ID for getting their pre-defined query params
+			const taskView = await this._taskViewService.findOneByWhereOptions({ id: viewId, tenantId });
+			if (!taskView) {
+				throw new HttpException('View not found', HttpStatus.NOT_FOUND);
+			}
+
+			// Extract `queryParams` from the view
+			const queryParams = taskView.queryParams;
+			let viewFilters: IGetTasksByViewFilters = {};
+
+			try {
+				// SQLite stores the params as a JSON string: parse it once
+				const parsed = isSqlite() && typeof queryParams === 'string' ? JSON.parse(queryParams) : queryParams;
+				// A view saved without query params stores null: fall back to no filters, as on the other databases
+				if (parsed !== null && parsed !== undefined && (typeof parsed !== 'object' || Array.isArray(parsed))) {
+					throw new Error('Task view query parameters must be an object');
+				}
+				viewFilters = (parsed as IGetTasksByViewFilters) || {};
+			} catch (error) {
+				throw new HttpException('Invalid query parameters in task view', HttpStatus.BAD_REQUEST);
+			}
+
+			// Extract filters
+			const {
+				statuses = [],
+				priorities = [],
+				sizes = [],
+				types = [],
+				startDates = [],
+				dueDates = [],
+				organizationId,
+				relations = []
+			} = viewFilters;
+
+			// Calculate min and max dates only if arrays are not empty
+			const getMinMaxDates = (dates: Date[]) =>
+				dates.length
+					? [
+							new Date(
+								Math.min(
+									...dates
+										.filter((date) => !Number.isNaN(new Date(date).getTime()))
+										.map((date) => new Date(date).getTime())
+								)
+							),
+							new Date(
+								Math.max(
+									...dates
+										.filter((date) => !Number.isNaN(new Date(date).getTime()))
+										.map((date) => new Date(date).getTime())
+								)
+							)
+					  ]
+					: [undefined, undefined];
+
+			const [minStartDate, maxStartDate] = getMinMaxDates(startDates);
+			const [minDueDate, maxDueDate] = getMinMaxDates(dueDates);
+
+			// Build the 'where' condition
+			const mainWhereCondition = this.buildAdvancedWhereCondition(viewFilters);
+			const where: FindOptionsWhere<Task> = {
+				...mainWhereCondition,
+				...(statuses.length && { status: In(statuses) }),
+				...(priorities.length && { priority: In(priorities) }),
+				...(sizes.length && { size: In(sizes) }),
+				...(types.length && { issueType: In(types) }),
+				...(minStartDate && maxStartDate && { startDate: Between(minStartDate, maxStartDate) }),
+				...(minDueDate && maxDueDate && { dueDate: Between(minDueDate, maxDueDate) }),
+				// Only scope by organization when one is known: the view's organizationId is a nullable
+				// column and the stored query params may carry null (a null used to be dropped silently).
+				...(taskView.organizationId || organizationId
+					? { organizationId: taskView.organizationId || organizationId }
+					: {}),
+				tenantId
+			};
+
+			// Define find options
+			const findOptions: FindManyOptions<Task> = { where, ...(relations && { relations: parseFindOptionsRelations(relations) }) };
+
+			// Retrieve tasks using base class method
+			return await super.findAll(findOptions);
+		} catch (error) {
+			console.error(`Error while retrieve view tasks: ${error.message}`, error.message);
+			throw new HttpException({ message: error?.message, error }, HttpStatus.BAD_REQUEST);
+		}
+	}
+
+	/**
+	 * Retrieves tasks based on the provided date filters for startDate and dueDate.
+	 *
+	 * @function getTasksByDateFilters
+	 * @param {ITaskDateFilterInput} params - The query params containing the date filters for the tasks.
+	 *
+	 * @returns {Promise<IPagination<ITask>>} A promise that resolves to an paginated tasks filtered by the provided dates.
+	 *
+	 * @throws {Error} Will throw an error if there is a problem with the database query.
+	 */
+	async getTasksByDateFilters(params: ITaskDateFilterInput): Promise<IPagination<ITask>> {
+		// Builds its own query, so the check in the CRUD read methods never runs: assert the
+		// sensitive-relation table on the client-supplied relations before anything is loaded.
+		this.assertRelationsPermitted(params);
+
+		const tenantId = RequestContext.currentTenantId() || params.tenantId;
+
+		try {
+			const {
+				startDateFrom,
+				startDateTo,
+				dueDateFrom,
+				dueDateTo,
+				createdByUserId,
+				isScreeningTask = false,
+				organizationId,
+				employeeId,
+				projectId,
+				organizationTeamId,
+				organizationSprintId,
+				relations
+			} = params;
+
+			switch (this.ormType) {
+				case MultiORMEnum.MikroORM: {
+					const mikroWhere: any = { tenantId, organizationId, isScreeningTask };
+
+					// Date range filters
+					if (isNotEmpty(startDateFrom) && isNotEmpty(startDateTo)) {
+						mikroWhere.startDate = { $gte: startDateFrom, $lte: startDateTo };
+					} else if (isNotEmpty(startDateFrom)) {
+						mikroWhere.startDate = { $gte: startDateFrom };
+					} else if (isNotEmpty(startDateTo)) {
+						mikroWhere.startDate = { $lte: startDateTo };
+					}
+
+					if (isNotEmpty(dueDateFrom) && isNotEmpty(dueDateTo)) {
+						mikroWhere.dueDate = { $gte: dueDateFrom, $lte: dueDateTo };
+					} else if (isNotEmpty(dueDateFrom)) {
+						mikroWhere.dueDate = { $gte: dueDateFrom };
+					} else if (isNotEmpty(dueDateTo)) {
+						mikroWhere.dueDate = { $lte: dueDateTo };
+					}
+
+					if (isNotEmpty(createdByUserId)) mikroWhere.createdByUserId = createdByUserId;
+					if (isNotEmpty(employeeId)) mikroWhere.members = { id: employeeId };
+					if (isNotEmpty(organizationTeamId)) mikroWhere.teams = { id: organizationTeamId };
+					if (isNotEmpty(projectId)) mikroWhere.projectId = projectId;
+					if (isNotEmpty(organizationSprintId)) mikroWhere.organizationSprintId = organizationSprintId;
+
+					const [items, total] = await this.mikroOrmRepository.findAndCount(mikroWhere, {
+						...(relations ? { populate: Object.keys(relations) as any[] } : {})
+					});
+					return { items: items.map((e) => this.serialize(e)) as ITask[], total };
+				}
+				case MultiORMEnum.TypeORM:
+				default: {
+					let query = this.typeOrmRepository.createQueryBuilder(this.tableName);
+
+					query.andWhere(
+						new Brackets((qb: WhereExpressionBuilder) => {
+							qb.andWhere(p(`"${query.alias}"."tenantId" = :tenantId`), { tenantId });
+							qb.andWhere(p(`"${query.alias}"."organizationId" = :organizationId`), { organizationId });
+						})
+					);
+
+					// Apply the filters on startDate and dueDate
+					query = addBetween<Task>(query, 'startDate', startDateFrom, startDateTo, p);
+					query = addBetween<Task>(query, 'dueDate', dueDateFrom, dueDateTo, p);
+
+					// Add Optional additional filters by
+					query.andWhere(
+						new Brackets((web: WhereExpressionBuilder) => {
+							if (isNotEmpty(createdByUserId)) {
+								web.andWhere(p(`"${query.alias}"."createdByUserId" = :createdByUserId`), {
+									createdByUserId
+								});
+							}
+
+							if (isNotEmpty(employeeId)) {
+								query.leftJoin(`${query.alias}.members`, 'members');
+								web.andWhere((qb: SelectQueryBuilder<Task>) => {
+									const subQuery = qb.subQuery();
+									subQuery
+										.select(p('"task_employee"."taskId"'))
+										.from(p('task_employee'), p('task_employee'));
+									subQuery.andWhere(p('"task_employee"."employeeId" = :employeeId'), { employeeId });
+									return p(`"task_members"."taskId" IN (${subQuery.distinct(true).getQuery()})`);
+								});
+							}
+
+							if (isNotEmpty(organizationTeamId)) {
+								query.leftJoin(`${query.alias}.teams`, 'teams');
+								web.andWhere((qb: SelectQueryBuilder<Task>) => {
+									const subQuery = qb.subQuery();
+									subQuery.select(p('"task_team"."taskId"')).from(p('task_team'), p('task_team'));
+									subQuery.andWhere(p('"task_team"."organizationTeamId" = :organizationTeamId'), {
+										organizationTeamId
+									});
+									return p(`"task_teams"."taskId" IN (${subQuery.distinct(true).getQuery()})`);
+								});
+							}
+							if (isNotEmpty(projectId)) {
+								web.andWhere(p(`"${query.alias}"."projectId" = :projectId`), { projectId });
+							}
+
+							if (isNotEmpty(organizationSprintId)) {
+								web.andWhere(p(`"${query.alias}"."organizationSprintId" = :organizationSprintId`), {
+									organizationSprintId
+								});
+							}
+
+							web.andWhere(p(`"${query.alias}"."isScreeningTask" = :isScreeningTask`), {
+								isScreeningTask
+							});
+						})
+					);
+
+					// Check if relations were provided and include them
+					query.setFindOptions({
+						...(relations ? { relations: parseFindOptionsRelations(relations) } : {})
+					});
+
+					const [items, total] = await query.getManyAndCount();
+
+					return { items, total };
+				}
+			}
+		} catch (error) {
+			throw new BadRequestException(error);
+		}
+	}
+
+	/**
+	 * Constructs advanced `where` conditions for filtering tasks based on the provided filters and existing conditions.
+	 *
+	 * @private
+	 * @param {ITaskAdvancedFilter | IGetTasksByViewFilters} [filters] - Advanced filtering criteria for tasks, including projects, teams, sprints, and more.
+	 * @param {FindOptionsWhere<Task>} [where] - Existing `where` conditions to be merged with the filters.
+	 * @returns {FindOptionsWhere<Task>} A `where` condition object to be used in database queries.
+	 */
+	private buildAdvancedWhereCondition(
+		filters?: ITaskAdvancedFilter | IGetTasksByViewFilters,
+		where: FindOptionsWhere<Task> = {}
+	): FindOptionsWhere<Task> {
+		// Destructuring filter params
+		const {
+			ids = [],
+			projects = [],
+			teams = [],
+			modules = [],
+			sprints = [],
+			members = [],
+			tags = [],
+			statusIds = [],
+			priorityIds = [],
+			sizeIds = [],
+			parentIds = [],
+			createdByUserIds = [],
+			dailyPlans = []
+		} = filters;
+
+		// Build the 'where' condition
+		return {
+			...(ids.length && !where.id ? { id: In(ids) } : {}),
+			...(projects.length && !where.projectId ? { projectId: In(projects) } : {}),
+			...(teams.length && !where.teams ? { teams: { id: In(teams) } } : {}),
+			...(modules.length && !where.modules ? { modules: { id: In(modules) } } : {}),
+			...(sprints.length && !where.organizationSprintId ? { organizationSprintId: In(sprints) } : {}),
+			...(members.length && !where.members ? { members: { id: In(members) } } : {}),
+			...(tags.length && !where.tags ? { tags: { id: In(tags) } } : {}),
+			...(statusIds.length && !where.taskStatusId ? { taskStatusId: In(statusIds) } : {}),
+			...(priorityIds.length && !where.taskPriorityId ? { taskPriorityId: In(priorityIds) } : {}),
+			...(sizeIds.length && !where.taskSizeId ? { taskSizeId: In(sizeIds) } : {}),
+			...(parentIds.length && !where.parentId ? { parentId: In(parentIds) } : {}),
+			...(createdByUserIds.length && !where.createdByUserId ? { createdByUserId: In(createdByUserIds) } : {}),
+			...(dailyPlans.length && !where.dailyPlans ? { dailyPlans: { id: In(dailyPlans) } } : {})
+		};
+	}
+}

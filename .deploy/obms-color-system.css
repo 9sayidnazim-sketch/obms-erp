@@ -1,0 +1,628 @@
+/* ========================================================
+   OBMS ERP - OCTAPUS SYSTEM
+   CENTRALIZED COLOR SYSTEM & THEME TOKENS
+   Single Source of Truth for Light & Dark Mode
+   ======================================================== */
+
+:root {
+  /* --------------------------------------------------------
+     LIGHT MODE PALETTE (Default)
+     -------------------------------------------------------- */
+  --background: #FFFFFF;
+  --surface: #F5F5F5;
+  --surface-card: #FFFFFF;
+  --foreground: #1A1A1A;
+  --muted: #F0F0F0;
+  --muted-foreground: #6B6B6B;
+  --border: #E2E2E2;
+  --border-subtle: #EAEAEA;
+  --primary: #1A1A1A;
+  --primary-foreground: #FFFFFF;
+  --primary-hover: #333333;
+  --primary-active: #000000;
+  --secondary: #F5F5F5;
+  --secondary-foreground: #1A1A1A;
+  --accent: #4A4A4A;
+  --accent-foreground: #FFFFFF;
+  --success: #16A34A;
+  --success-foreground: #FFFFFF;
+  --warning: #D97706;
+  --warning-foreground: #FFFFFF;
+  --danger: #DC2626;
+  --danger-foreground: #FFFFFF;
+  --ring: rgba(26, 26, 26, 0.2);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.08), 0 2px 4px -2px rgba(0, 0, 0, 0.05);
+}
+
+/* --------------------------------------------------------
+   DARK MODE PALETTE
+   Active when Nebular or body carries dark theme classes
+   -------------------------------------------------------- */
+body.nb-theme-gauzy-dark,
+body.nb-theme-dark,
+body.nb-theme-cosmic,
+body.nb-theme-material-dark,
+.dark {
+  --background: #09090B;
+  --surface: #121214;
+  --surface-card: #18181B;
+  --foreground: #FAFAFA;
+  --muted: #27272A;
+  --muted-foreground: #A1A1AA;
+  --border: rgba(255, 255, 255, 0.12);
+  --border-subtle: rgba(255, 255, 255, 0.07);
+  --primary: #FAFAFA;
+  --primary-foreground: #09090B;
+  --primary-hover: #E4E4E7;
+  --primary-active: #FFFFFF;
+  --secondary: #27272A;
+  --secondary-foreground: #FAFAFA;
+  --accent: #3F3F46;
+  --accent-foreground: #FAFAFA;
+  --success: #22C55E;
+  --success-foreground: #09090B;
+  --warning: #F59E0B;
+  --warning-foreground: #09090B;
+  --danger: #EF4444;
+  --danger-foreground: #FAFAFA;
+  --ring: rgba(250, 250, 250, 0.25);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.5);
+}
+
+/* ========================================================
+   FRAMEWORK VARIABLE BRIDGING (Nebular Theme Integration)
+   ======================================================== */
+nb-layout,
+.nb-theme-default,
+.nb-theme-gauzy-light,
+.nb-theme-gauzy-dark,
+.nb-theme-dark,
+.nb-theme-cosmic,
+.nb-theme-corporate {
+  --layout-background-color: var(--background) !important;
+  --card-background-color: var(--surface-card) !important;
+  --card-text-color: var(--foreground) !important;
+  --text-basic-color: var(--foreground) !important;
+  --text-hint-color: var(--muted-foreground) !important;
+  --color-primary-default: var(--primary) !important;
+  --color-primary-hover: var(--primary-hover) !important;
+  --color-primary-focus: var(--primary-hover) !important;
+  --color-primary-active: var(--primary-active) !important;
+  --sidebar-background-color: var(--surface) !important;
+  --header-background-color: var(--surface) !important;
+  --border-basic-color-1: var(--border) !important;
+  --border-basic-color-2: var(--border) !important;
+  --border-basic-color-3: var(--border) !important;
+  --border-basic-color-4: var(--border) !important;
+  --border-basic-color-5: var(--border) !important;
+  --divider-color: var(--border) !important;
+}
+
+/* ========================================================
+   CORE LAYOUT & CANVAS
+   ======================================================== */
+body:not(.auth-route) nb-layout,
+body:not(.auth-route) .scrollable-container,
+body:not(.auth-route) .layout,
+body:not(.auth-route) .layout-container,
+body:not(.auth-route) .content,
+body:not(.auth-route) .columns,
+body:not(.auth-route) nb-layout-column.wrapper,
+body:not(.auth-route) nb-layout-column {
+  background-color: var(--background) !important;
+  color: var(--foreground) !important;
+}
+
+/* Header Navbar */
+nb-layout-header,
+nb-layout-header nav,
+ga-header,
+header.header {
+  background-color: var(--surface) !important;
+  color: var(--foreground) !important;
+  border-bottom: 1px solid var(--border) !important;
+  box-shadow: none !important;
+}
+
+nb-layout-header .header-container {
+  background-color: var(--surface) !important;
+}
+
+/* Sidebar Menu */
+nb-sidebar,
+nb-sidebar.menu-sidebar,
+nb-sidebar .main-container,
+nb-sidebar .scrollable-container {
+  background-color: var(--surface) !important;
+  border-right: 1px solid var(--border) !important;
+  box-shadow: none !important;
+}
+
+nb-sidebar .menu-item a {
+  color: var(--muted-foreground) !important;
+  border-radius: 8px !important;
+  transition: all 0.15s ease !important;
+}
+
+nb-sidebar .menu-item a:hover {
+  background-color: var(--muted) !important;
+  color: var(--foreground) !important;
+}
+
+nb-sidebar .menu-item.active > a,
+nb-sidebar .menu-item a.active {
+  background-color: var(--muted) !important;
+  color: var(--foreground) !important;
+  font-weight: 600 !important;
+}
+
+nb-sidebar .menu-item a nb-icon,
+nb-sidebar .menu-item a i,
+nb-sidebar .menu-item a svg {
+  color: inherit !important;
+}
+
+/* ========================================================
+   CARDS & PANELS
+   ======================================================== */
+nb-card,
+.card,
+.dashboard-card-scroll nb-card,
+nb-card.ng-star-inserted {
+  background-color: var(--surface-card) !important;
+  color: var(--foreground) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 12px !important;
+  box-shadow: var(--shadow-sm) !important;
+  transition: border-color 0.15s ease !important;
+}
+
+nb-card-header {
+  background-color: transparent !important;
+  color: var(--foreground) !important;
+  border-bottom: 1px solid var(--border) !important;
+  font-weight: 600 !important;
+}
+
+nb-card-body {
+  color: var(--foreground) !important;
+}
+
+nb-card-footer {
+  background-color: transparent !important;
+  border-top: 1px solid var(--border) !important;
+  color: var(--muted-foreground) !important;
+}
+
+/* ========================================================
+   TYPOGRAPHY & TEXT CONTRAST (WCAG AA Compliant)
+   ======================================================== */
+h1, h2, h3, h4, h5, h6,
+.content-heading,
+.title,
+.sub-title,
+.card-title,
+nb-card-header .title {
+  color: var(--foreground) !important;
+  font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif !important;
+}
+
+/* Muted & Secondary Text */
+.caption,
+.caption-2,
+.breadcrumb,
+.breadcrumbs,
+.breadcrumbs a,
+.text-hint,
+.text-muted,
+.secondary-text,
+.sub-header {
+  color: var(--muted-foreground) !important;
+}
+
+.breadcrumbs a:hover {
+  color: var(--foreground) !important;
+}
+
+/* Standard Links */
+a:not(.btn):not([nbbutton]):not(.tab-link):not(.menu-title):not(.octapus-social-btn) {
+  color: var(--foreground) !important;
+  text-decoration: none !important;
+}
+
+a:not(.btn):not([nbbutton]):not(.tab-link):not(.menu-title):not(.octapus-social-btn):hover {
+  text-decoration: underline !important;
+  opacity: 0.85 !important;
+}
+
+/* ========================================================
+   BUTTON STATES (Default, Hover, Active, Disabled, Focus)
+   ======================================================== */
+/* Primary Buttons */
+button[status="primary"],
+button.appearance-filled[status="primary"],
+button.submit-btn,
+button.btn-primary,
+.header-actions button[status="primary"] {
+  background-color: var(--primary) !important;
+  color: var(--primary-foreground) !important;
+  border: 1px solid var(--primary) !important;
+  border-radius: 8px !important;
+  font-weight: 600 !important;
+  padding: 8px 16px !important;
+  cursor: pointer !important;
+  transition: all 0.15s ease !important;
+}
+
+button[status="primary"]:hover,
+button.appearance-filled[status="primary"]:hover,
+button.submit-btn:hover,
+button.btn-primary:hover {
+  background-color: var(--primary-hover) !important;
+  border-color: var(--primary-hover) !important;
+  color: var(--primary-foreground) !important;
+  transform: translateY(-1px);
+}
+
+button[status="primary"]:active,
+button.appearance-filled[status="primary"]:active,
+button.submit-btn:active {
+  background-color: var(--primary-active) !important;
+  border-color: var(--primary-active) !important;
+  transform: translateY(0);
+}
+
+button[status="primary"]:focus-visible,
+button.submit-btn:focus-visible {
+  box-shadow: 0 0 0 3px var(--ring) !important;
+  outline: none !important;
+}
+
+button[status="primary"]:disabled,
+button.submit-btn:disabled {
+  opacity: 0.45 !important;
+  cursor: not-allowed !important;
+  transform: none !important;
+}
+
+/* Secondary & Basic Buttons */
+button[status="basic"],
+button.appearance-filled[status="basic"],
+button.btn-secondary {
+  background-color: var(--secondary) !important;
+  color: var(--secondary-foreground) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 8px !important;
+  font-weight: 500 !important;
+}
+
+button[status="basic"]:hover,
+button.appearance-filled[status="basic"]:hover {
+  background-color: var(--muted) !important;
+}
+
+/* Outline Buttons */
+button.appearance-outline {
+  background-color: transparent !important;
+  border: 1px solid var(--border) !important;
+  color: var(--foreground) !important;
+  border-radius: 8px !important;
+  font-weight: 500 !important;
+}
+
+button.appearance-outline:hover {
+  background-color: var(--muted) !important;
+  border-color: var(--foreground) !important;
+}
+
+/* Semantic Status Buttons */
+button[status="success"],
+button.appearance-filled[status="success"] {
+  background-color: var(--success) !important;
+  color: var(--success-foreground) !important;
+  border: 1px solid var(--success) !important;
+  border-radius: 8px !important;
+}
+
+button[status="danger"],
+button.appearance-filled[status="danger"] {
+  background-color: var(--danger) !important;
+  color: var(--danger-foreground) !important;
+  border: 1px solid var(--danger) !important;
+  border-radius: 8px !important;
+}
+
+button[status="warning"],
+button.appearance-filled[status="warning"] {
+  background-color: var(--warning) !important;
+  color: var(--warning-foreground) !important;
+  border: 1px solid var(--warning) !important;
+  border-radius: 8px !important;
+}
+
+/* ========================================================
+   FORM CONTROLS & INPUTS
+   ======================================================== */
+input,
+input[nbinput],
+select,
+textarea,
+.form-control {
+  background-color: var(--background) !important;
+  color: var(--foreground) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 8px !important;
+  padding: 8px 12px !important;
+  font-size: 14px !important;
+  transition: all 0.15s ease !important;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--muted-foreground) !important;
+  opacity: 0.8 !important;
+}
+
+input:focus,
+input[nbinput]:focus,
+select:focus,
+textarea:focus,
+.form-control:focus {
+  border-color: var(--primary) !important;
+  box-shadow: 0 0 0 3px var(--ring) !important;
+  outline: none !important;
+}
+
+input.status-danger,
+.form-control.is-invalid {
+  border-color: var(--danger) !important;
+}
+
+/* Select Dropdown Component (ng-select) */
+ng-select .ng-select-container {
+  background-color: var(--background) !important;
+  color: var(--foreground) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 8px !important;
+  min-height: 38px !important;
+}
+
+ng-select .ng-value-label,
+ng-select .ng-placeholder,
+ng-select .ng-input > input {
+  color: var(--foreground) !important;
+}
+
+ng-dropdown-panel {
+  background-color: var(--surface-card) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 8px !important;
+  box-shadow: var(--shadow-md) !important;
+}
+
+ng-dropdown-panel .ng-option {
+  color: var(--foreground) !important;
+  padding: 8px 12px !important;
+}
+
+ng-dropdown-panel .ng-option:hover,
+ng-dropdown-panel .ng-option-marked {
+  background-color: var(--muted) !important;
+  color: var(--foreground) !important;
+}
+
+ng-dropdown-panel .ng-option-selected {
+  background-color: var(--secondary) !important;
+  font-weight: 600 !important;
+}
+
+/* ========================================================
+   TABLES & DATA GRIDS
+   ======================================================== */
+angular2-smart-table,
+table,
+.table {
+  background-color: var(--surface-card) !important;
+  color: var(--foreground) !important;
+  border-collapse: separate !important;
+  border-spacing: 0 !important;
+  width: 100% !important;
+}
+
+thead tr,
+th,
+table tr th,
+angular2-smart-table table tr th {
+  background-color: var(--surface) !important;
+  color: var(--foreground) !important;
+  border-bottom: 1px solid var(--border) !important;
+  font-weight: 600 !important;
+  font-size: 13px !important;
+  text-transform: none !important;
+  padding: 10px 14px !important;
+}
+
+tbody tr,
+td,
+table tr td,
+angular2-smart-table table tr td {
+  background-color: transparent !important;
+  color: var(--foreground) !important;
+  border-bottom: 1px solid var(--border-subtle) !important;
+  padding: 12px 14px !important;
+  font-size: 13.5px !important;
+}
+
+tbody tr:hover,
+angular2-smart-table table tbody tr:hover {
+  background-color: var(--muted) !important;
+}
+
+tbody tr:hover td {
+  background-color: transparent !important;
+}
+
+/* Pagination */
+.pagination,
+.ng2-smart-pagination {
+  display: flex !important;
+  gap: 4px !important;
+}
+
+.pagination .page-item .page-link,
+.ng2-smart-pagination .page-link {
+  background-color: var(--surface) !important;
+  color: var(--foreground) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 6px !important;
+  padding: 6px 12px !important;
+}
+
+.pagination .page-item.active .page-link,
+.ng2-smart-pagination .page-item.active .page-link {
+  background-color: var(--primary) !important;
+  color: var(--primary-foreground) !important;
+  border-color: var(--primary) !important;
+}
+
+/* ========================================================
+   TABS & NAVIGATION BARS
+   ======================================================== */
+nb-tabset ul.tabset,
+nb-route-tabset ul.route-tabset {
+  border-bottom: 1px solid var(--border) !important;
+  background-color: transparent !important;
+}
+
+li.tab a.tab-link,
+li.route-tab a.tab-link {
+  color: var(--muted-foreground) !important;
+  background-color: transparent !important;
+  font-weight: 500 !important;
+  font-size: 14px !important;
+  padding: 12px 18px !important;
+  border-bottom: 2px solid transparent !important;
+  transition: all 0.15s ease !important;
+}
+
+li.tab a.tab-link:hover,
+li.route-tab a.tab-link:hover {
+  color: var(--foreground) !important;
+}
+
+li.tab.active a.tab-link,
+li.route-tab.active a.tab-link {
+  color: var(--foreground) !important;
+  font-weight: 600 !important;
+  border-bottom: 2px solid var(--foreground) !important;
+  background-color: transparent !important;
+}
+
+li.tab.active a.tab-link .tab-text,
+li.route-tab.active a.tab-link .tab-text {
+  color: var(--foreground) !important;
+}
+
+li.tab a.tab-link nb-icon,
+li.route-tab a.tab-link nb-icon {
+  color: inherit !important;
+}
+
+/* ========================================================
+   MODALS, DIALOGS, DROPDOWNS & OVERLAYS
+   ======================================================== */
+nb-dialog-container,
+.modal-content,
+nb-window {
+  background-color: var(--surface-card) !important;
+  color: var(--foreground) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 14px !important;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.2), 0 10px 10px -5px rgba(0, 0, 0, 0.1) !important;
+}
+
+nb-context-menu,
+nb-popover,
+.popover,
+.user-menu,
+.workspace-menu {
+  background-color: var(--surface-card) !important;
+  color: var(--foreground) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 10px !important;
+  box-shadow: var(--shadow-md) !important;
+}
+
+nb-context-menu .menu-item a {
+  color: var(--foreground) !important;
+}
+
+nb-context-menu .menu-item a:hover {
+  background-color: var(--muted) !important;
+}
+
+/* ========================================================
+   BADGES, TAGS & NOTICES
+   ======================================================== */
+.badge,
+nb-tag {
+  font-size: 11.5px !important;
+  font-weight: 600 !important;
+  padding: 3px 8px !important;
+  border-radius: 6px !important;
+}
+
+.badge-success,
+nb-tag[status="success"],
+[class*="status-active"],
+[class*="status-enabled"] {
+  background-color: rgba(22, 163, 74, 0.15) !important;
+  color: var(--success) !important;
+  border: 1px solid rgba(22, 163, 74, 0.3) !important;
+}
+
+.badge-danger,
+nb-tag[status="danger"],
+[class*="status-disabled"],
+[class*="status-inactive"] {
+  background-color: rgba(220, 38, 38, 0.15) !important;
+  color: var(--danger) !important;
+  border: 1px solid rgba(220, 38, 38, 0.3) !important;
+}
+
+.badge-warning,
+nb-tag[status="warning"] {
+  background-color: rgba(217, 119, 6, 0.15) !important;
+  color: var(--warning) !important;
+  border: 1px solid rgba(217, 119, 6, 0.3) !important;
+}
+
+/* Verification Notice Bar - High Contrast */
+.email-verification-notice {
+  background-color: rgba(217, 119, 6, 0.16) !important;
+  color: var(--foreground) !important;
+  border-bottom: 1px solid rgba(217, 119, 6, 0.35) !important;
+  padding: 8px 16px !important;
+  font-weight: 500 !important;
+  font-size: 13.5px !important;
+}
+
+.email-verification-notice span,
+.email-verification-notice a {
+  color: var(--foreground) !important;
+}
+
+/* ========================================================
+   CHARTS & METRIC WIDGETS
+   ======================================================== */
+.echart,
+echarts {
+  color: var(--foreground) !important;
+}
+
+.chart-legend,
+.legend-item {
+  color: var(--muted-foreground) !important;
+}

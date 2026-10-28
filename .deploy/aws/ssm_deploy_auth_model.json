@@ -1,0 +1,12 @@
+{
+  "InstanceIds": ["i-0531be6f688262556"],
+  "DocumentName": "AWS-RunShellScript",
+  "Parameters": {
+    "commands": [
+      "aws s3 cp s3://orbit-deploy-109613847761-20261012/gauzy/gauzy-deploy.tar.gz /opt/gauzy/gauzy-deploy.tar.gz --region ap-south-1",
+      "tar -xzf /opt/gauzy/gauzy-deploy.tar.gz -C /opt/gauzy/",
+      "chmod +x /opt/gauzy/*.sh",
+      "/opt/gauzy/deploy_auth_on_ec2.sh"
+    ]
+  }
+}

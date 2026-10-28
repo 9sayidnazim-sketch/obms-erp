@@ -1,0 +1,490 @@
+/* ========================================================
+   OBMS ERP - OCTAPUS SYSTEM: CLEAN SPLIT-SCREEN AUTH MODEL
+   ======================================================== */
+
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+
+/* Reset and full-viewport foundation - SCOPED STRICTLY TO AUTH ROUTE */
+ngx-auth,
+ngx-auth nb-layout,
+ngx-auth .scrollable-container,
+ngx-auth .layout,
+ngx-auth .layout-container,
+ngx-auth .content,
+ngx-auth .columns,
+ngx-auth nb-layout-column.wrapper {
+  margin: 0 !important;
+  padding: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  min-height: 100vh !important;
+  max-width: 100vw !important;
+  overflow: hidden !important;
+  background: #FFFFFF !important;
+  font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif !important;
+}
+
+/* Hide Nebular headers and legacy toggles on auth route */
+ngx-auth nb-card-header.header.login,
+ngx-auth .theme-switch,
+ngx-auth .svg-wrapper,
+ngx-auth .features-wrapper,
+ngx-auth .hr-div-strong,
+ngx-auth .hr-div-soft,
+ngx-auth .demo-credentials-select {
+  display: none !important;
+}
+
+ngx-auth nb-card.card,
+ngx-auth nb-card-body.body.login,
+ngx-auth nb-auth-block.auth-block,
+ngx-login {
+  background: #FFFFFF !important;
+  border: none !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  min-height: 100vh !important;
+  display: flex !important;
+}
+
+/* Split Screen Container */
+.login-container {
+  display: flex !important;
+  flex-direction: row !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  min-height: 100vh !important;
+  max-width: 100vw !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  gap: 0 !important;
+  box-sizing: border-box !important;
+  overflow: hidden !important;
+}
+
+/* Left Panel - Brand Image Section */
+.octapus-hero-panel {
+  flex: 1 1 50% !important;
+  position: relative !important;
+  overflow: hidden !important;
+  height: 100vh !important;
+  min-height: 100vh !important;
+  background: #FAF9F5 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  border-radius: 0 !important;
+  border: none !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+}
+
+.octapus-hero-panel .back-btn {
+  position: absolute !important;
+  top: 24px !important;
+  left: 24px !important;
+  z-index: 20 !important;
+  width: 42px !important;
+  height: 42px !important;
+  background: rgba(255, 255, 255, 0.9) !important;
+  backdrop-filter: blur(8px) !important;
+  border-radius: 9999px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  border: 1px solid rgba(0, 0, 0, 0.08) !important;
+  cursor: pointer !important;
+  transition: all 0.2s ease !important;
+  color: #1E293B !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06) !important;
+}
+
+.octapus-hero-panel .back-btn:hover {
+  background: #FFFFFF !important;
+  transform: translateX(-2px) !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1) !important;
+}
+
+.octapus-hero-panel .hero-img {
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: contain !important;
+  object-position: center !important;
+  background-color: #FAF9F5 !important;
+}
+
+.octapus-hero-panel .hero-branding-pill {
+  position: absolute !important;
+  bottom: 24px !important;
+  left: 24px !important;
+  z-index: 10 !important;
+  background: rgba(15, 23, 42, 0.8) !important;
+  backdrop-filter: blur(12px) !important;
+  border: 1px solid rgba(255, 255, 255, 0.18) !important;
+  border-radius: 12px !important;
+  padding: 8px 16px !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+  color: #FFFFFF !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.04em !important;
+}
+
+.octapus-hero-panel .hero-branding-pill .brand-dot {
+  width: 8px !important;
+  height: 8px !important;
+  border-radius: 50% !important;
+  background: #34D399 !important;
+  box-shadow: 0 0 8px #34D399 !important;
+}
+
+/* Right Panel - Form Section */
+.login-container .login-wrapper {
+  flex: 1 1 50% !important;
+  height: 100vh !important;
+  min-height: 100vh !important;
+  background: #FFFFFF !important;
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  justify-content: center !important;
+  padding: 40px !important;
+  box-sizing: border-box !important;
+  overflow-y: auto !important;
+  max-width: 50% !important;
+  box-shadow: none !important;
+  border: none !important;
+  border-radius: 0 !important;
+}
+
+/* Form Container Inside Wrapper */
+.login-wrapper > div,
+.login-wrapper form {
+  width: 100% !important;
+  max-width: 440px !important;
+}
+
+/* Header Section */
+.login-wrapper .headings {
+  margin-bottom: 24px !important;
+  text-align: left !important;
+}
+
+.login-wrapper .headings .title {
+  font-size: 30px !important;
+  font-weight: 800 !important;
+  color: #111827 !important;
+  letter-spacing: -0.02em !important;
+  margin-bottom: 6px !important;
+  font-family: 'Plus Jakarta Sans', sans-serif !important;
+}
+
+.login-wrapper .headings .sub-title {
+  font-size: 14.5px !important;
+  color: #4B5563 !important;
+  font-weight: 400 !important;
+  display: flex !important;
+  gap: 4px !important;
+  align-items: center !important;
+}
+
+.login-wrapper .headings .sub-title .signup-link {
+  color: #2563EB !important;
+  font-weight: 600 !important;
+  text-decoration: none !important;
+  cursor: pointer !important;
+}
+
+.login-wrapper .headings .sub-title .signup-link:hover {
+  text-decoration: underline !important;
+  color: #1D4ED8 !important;
+}
+
+/* 1-Click Role Quick Access Box */
+.octapus-demo-bar {
+  margin-bottom: 20px !important;
+  background: #F8FAFC !important;
+  border: 1px solid #E2E8F0 !important;
+  border-radius: 14px !important;
+  padding: 12px 14px !important;
+  box-sizing: border-box !important;
+}
+
+.octapus-demo-bar-title {
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  color: #64748B !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.08em !important;
+  margin-bottom: 8px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+}
+
+.octapus-demo-pills {
+  display: flex !important;
+  gap: 8px !important;
+}
+
+.octapus-demo-pill {
+  flex: 1 !important;
+  padding: 8px 6px !important;
+  background: #FFFFFF !important;
+  border: 1px solid #CBD5E1 !important;
+  border-radius: 10px !important;
+  cursor: pointer !important;
+  text-align: center !important;
+  transition: all 0.2s ease !important;
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  gap: 2px !important;
+}
+
+.octapus-demo-pill:hover,
+.octapus-demo-pill.active {
+  background: #EFF6FF !important;
+  border-color: #2563EB !important;
+  transform: translateY(-1px) !important;
+  box-shadow: 0 4px 6px -1px rgba(37, 99, 235, 0.1) !important;
+}
+
+.octapus-demo-pill .role-name {
+  font-size: 12px !important;
+  font-weight: 700 !important;
+  color: #0F172A !important;
+}
+
+.octapus-demo-pill .role-hint {
+  font-size: 10px !important;
+  color: #64748B !important;
+}
+
+/* Form Groups and Inputs */
+.login-wrapper .form-control-group {
+  margin-bottom: 18px !important;
+}
+
+.login-wrapper .label {
+  font-size: 14px !important;
+  font-weight: 600 !important;
+  color: #374151 !important;
+  margin-bottom: 8px !important;
+  display: block !important;
+}
+
+.login-wrapper input,
+.login-wrapper input[nbInput],
+.login-wrapper input.input-full-width,
+.login-wrapper .input-full-width,
+.login-wrapper .input-full-width.status-basic {
+  width: 100% !important;
+  padding: 13px 16px !important;
+  border: 1px solid #D1D5DB !important;
+  border-radius: 12px !important;
+  font-size: 14.5px !important;
+  color: #111827 !important;
+  background: #FFFFFF !important;
+  background-color: #FFFFFF !important;
+  outline: none !important;
+  box-shadow: none !important;
+  height: 48px !important;
+  box-sizing: border-box !important;
+  transition: all 0.2s ease !important;
+}
+
+.login-wrapper input::placeholder,
+.login-wrapper input[nbInput]::placeholder,
+.login-wrapper input.input-full-width::placeholder {
+  color: #9CA3AF !important;
+}
+
+.login-wrapper input:focus,
+.login-wrapper input[nbInput]:focus,
+.login-wrapper input.input-full-width:focus,
+.login-wrapper .input-full-width.status-basic:focus {
+  border-color: #3B82F6 !important;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15) !important;
+  background: #FFFFFF !important;
+  background-color: #FFFFFF !important;
+}
+
+/* Options Row: Remember Me & Forgot Password */
+.login-wrapper .options-row {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  margin: 16px 0 24px !important;
+}
+
+.login-wrapper .accept-group {
+  display: flex !important;
+  align-items: center !important;
+}
+
+.login-wrapper .remember-me .text {
+  font-size: 14px !important;
+  color: #4B5563 !important;
+  font-weight: 500 !important;
+  margin-left: 8px !important;
+}
+
+.login-wrapper .forgot-password-link {
+  font-size: 14px !important;
+  color: #2563EB !important;
+  font-weight: 600 !important;
+  text-decoration: none !important;
+}
+
+.login-wrapper .forgot-password-link:hover {
+  text-decoration: underline !important;
+  color: #1D4ED8 !important;
+}
+
+/* Submit Action Button: Black, rounded-xl */
+.login-wrapper .submit-btn-wrapper {
+  margin: 0 !important;
+}
+
+html body .login-container form .submit-btn-wrapper .submit-btn:not([disabled]),
+html body .login-container form .submit-btn-wrapper button.submit-btn,
+button.submit-btn:not([disabled]),
+button.submit-btn,
+button.submit-btn.appearance-filled,
+button[nbbutton].submit-btn,
+.login-wrapper .submit-btn-wrapper button.submit-btn {
+  background: #000000 !important;
+  background-color: #000000 !important;
+  border-color: #000000 !important;
+  color: #FFFFFF !important;
+  padding: 13px 16px !important;
+  border-radius: 12px !important;
+  font-size: 15px !important;
+  font-weight: 600 !important;
+  height: 48px !important;
+  cursor: pointer !important;
+  border: none !important;
+  transition: all 0.2s ease !important;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1) !important;
+}
+
+html body .login-container form .submit-btn-wrapper .submit-btn:not([disabled]):hover,
+button.submit-btn:hover,
+button.submit-btn.appearance-filled:hover,
+button[nbbutton].submit-btn:hover,
+.login-wrapper .submit-btn-wrapper button.submit-btn:hover {
+  background: #1F2937 !important;
+  background-color: #1F2937 !important;
+  border-color: #1F2937 !important;
+  box-shadow: 0 6px 12px -2px rgba(0, 0, 0, 0.15) !important;
+  transform: translateY(-1px) !important;
+}
+
+/* Divider "or" */
+.octapus-or-divider {
+  position: relative !important;
+  margin: 24px 0 !important;
+  text-align: center !important;
+}
+
+.octapus-or-divider::before {
+  content: '' !important;
+  position: absolute !important;
+  top: 50% !important;
+  left: 0 !important;
+  right: 0 !important;
+  border-top: 1px solid #E5E7EB !important;
+}
+
+.octapus-or-divider span {
+  position: relative !important;
+  background: #FFFFFF !important;
+  padding: 0 12px !important;
+  font-size: 13.5px !important;
+  color: #6B7280 !important;
+}
+
+/* Social Buttons Grid */
+.octapus-social-grid {
+  display: grid !important;
+  grid-template-columns: 1fr 1fr !important;
+  gap: 14px !important;
+  margin-top: 8px !important;
+}
+
+.octapus-social-btn {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 8px !important;
+  padding: 11px 16px !important;
+  border: 1px solid #D1D5DB !important;
+  border-radius: 12px !important;
+  background: #FFFFFF !important;
+  color: #374151 !important;
+  font-size: 13.5px !important;
+  font-weight: 600 !important;
+  text-decoration: none !important;
+  cursor: pointer !important;
+  transition: all 0.2s ease !important;
+}
+
+.octapus-social-btn:hover {
+  background: #F9FAFB !important;
+  border-color: #9CA3AF !important;
+}
+
+.octapus-social-btn svg {
+  width: 18px !important;
+  height: 18px !important;
+}
+
+/* Hide old default social links and another-actions */
+ngx-social-links,
+.another-actions,
+.login-magic-wrapper {
+  display: none !important;
+}
+
+/* Mobile Responsiveness */
+@media (max-width: 900px) {
+  .login-container {
+    flex-direction: column !important;
+  }
+  .octapus-hero-panel {
+    display: none !important;
+  }
+  .login-container .login-wrapper {
+    max-width: 100% !important;
+    flex: 1 1 100% !important;
+    padding: 32px 20px !important;
+  }
+}
+
+/* ========================================================
+   PERMANENT REMOVAL OF DEMO NOTIFICATION BANNER
+   ======================================================== */
+.notification-header,
+ga-header .notification-header,
+header .notification-header,
+div.notification-header,
+[class*="notification-header"] {
+  display: none !important;
+  visibility: hidden !important;
+  height: 0 !important;
+  min-height: 0 !important;
+  max-height: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border: none !important;
+  overflow: hidden !important;
+  pointer-events: none !important;
+}

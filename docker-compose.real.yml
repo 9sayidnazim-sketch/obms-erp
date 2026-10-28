@@ -1,0 +1,107 @@
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: db
+    restart: always
+    environment:
+      POSTGRES_DB: gauzy
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: gauzy_password
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d gauzy || exit 1']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    volumes:
+      - postgres_data:/var/lib/postgresql/data/
+      - ./.deploy/db/init-user-db.sh:/docker-entrypoint-initdb.d/init-user-db.sh
+    ports:
+      - '5434:5432'
+    networks:
+      - overlay
+
+  api:
+    container_name: api
+    platform: linux/amd64
+    image: ghcr.io/ever-co/gauzy-api:latest
+    environment:
+      NODE_ENV: production
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: gauzy
+      DB_USER: postgres
+      DB_PASS: gauzy_password
+      DB_TYPE: postgres
+      DB_ORM: typeorm
+      DEMO: 'false'
+      APP_NAME: 'OBMS ERP'
+      COMPANY_NAME: 'Octapus System'
+      COMPANY_SITE_NAME: 'Octapus System'
+      COMPANY_LINK: 'https://octapus.system'
+      DEFAULT_CURRENCY: 'AED'
+      ALLOW_SUPER_ADMIN_ROLE: 'true'
+      ALLOW_INSECURE_SEED_CREDENTIALS: 'true'
+      DEMO_SUPER_ADMIN_PASSWORD: 'SuperStrongPassword2026!'
+      DEMO_ADMIN_PASSWORD: 'SuperStrongPassword2026!'
+      DEMO_EMPLOYEE_PASSWORD: 'SuperStrongPassword2026!'
+      REDIS_ENABLED: 'false'
+      JWT_SECRET: superSecretGauzyKey1234567890123456789012345678901234567890
+      JWT_REFRESH_TOKEN_SECRET: refreshSecretGauzyKey1234567890123456789012345678901234567890
+      JWT_VERIFICATION_TOKEN_SECRET: verificationSecretGauzyKey1234567890123456789012345678901234567890
+      EXPRESS_SESSION_SECRET: sessionSecretGauzyKey1234567890123456789012345678901234567890
+      ALLOWED_ORIGINS: http://localhost:4200,http://localhost:3000,http://127.0.0.1:4200,http://127.0.0.1:3000
+    entrypoint: '/srv/gauzy/api-patch-entrypoint.sh'
+    command: ['node', 'main.js']
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./.deploy/api-patch-entrypoint.sh:/srv/gauzy/api-patch-entrypoint.sh:ro
+      - ./.deploy/patch_api.js:/srv/gauzy/patches/patch_api.js:ro
+      - ./.deploy/rebrand_database.js:/srv/gauzy/patches/rebrand_database.js:ro
+    ports:
+      - '3000:3000'
+    networks:
+      - overlay
+
+  webapp:
+    container_name: webapp
+    platform: linux/amd64
+    image: ghcr.io/ever-co/gauzy-webapp:latest
+    environment:
+      NODE_ENV: production
+      DEMO: 'false'
+      APP_NAME: 'OBMS ERP'
+      COMPANY_NAME: 'Octapus System'
+      COMPANY_SITE_NAME: 'Octapus System'
+      COMPANY_LINK: 'https://octapus.system'
+      DEFAULT_CURRENCY: 'AED'
+    entrypoint: '/srv/gauzy/webapp-patch-entrypoint.sh'
+    command: ['nginx', '-g', 'daemon off;']
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_started
+    volumes:
+      - ./.deploy/webapp-patch-entrypoint.sh:/srv/gauzy/webapp-patch-entrypoint.sh:ro
+      - ./.deploy/1404.d530167e5825dfd1.js:/srv/gauzy/patches/1404.d530167e5825dfd1.js:ro
+      - ./.deploy/logo_Gauzy.svg:/srv/gauzy/patches/logo_Gauzy.svg:ro
+      - ./.deploy/octapus-auth-model.css:/srv/gauzy/patches/octapus-auth-model.css:ro
+      - ./.deploy/obms-color-system.css:/srv/gauzy/patches/obms-color-system.css:ro
+      - ./.deploy/octapus-auth-model.js:/srv/gauzy/patches/octapus-auth-model.js:ro
+      - ./.deploy/auth-hero-asset.jpg:/srv/gauzy/patches/auth-hero-asset.jpg:ro
+    ports:
+      - '4200:4200'
+    networks:
+      - overlay
+
+volumes:
+  postgres_data: {}
+
+networks:
+  overlay:
+    driver: bridge

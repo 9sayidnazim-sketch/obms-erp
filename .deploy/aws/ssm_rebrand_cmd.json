@@ -1,0 +1,21 @@
+{
+  "InstanceIds": ["i-0531be6f688262556"],
+  "DocumentName": "AWS-RunShellScript",
+  "Parameters": {
+    "commands": [
+      "aws s3 cp s3://orbit-deploy-109613847761-20261012/gauzy/gauzy-deploy.tar.gz /tmp/gauzy-deploy.tar.gz --region ap-south-1",
+      "tar -xzf /tmp/gauzy-deploy.tar.gz -C /opt/gauzy/",
+      "chmod +x /opt/gauzy/*.sh",
+      "sed -i 's/APP_NAME=.*/APP_NAME=\"OBMS ERP\"/g' /opt/gauzy/.env",
+      "grep -q 'DEFAULT_CURRENCY' /opt/gauzy/.env && sed -i 's/DEFAULT_CURRENCY=.*/DEFAULT_CURRENCY=\"AED\"/g' /opt/gauzy/.env || echo 'DEFAULT_CURRENCY=\"AED\"' >> /opt/gauzy/.env",
+      "grep -q 'COMPANY_NAME' /opt/gauzy/.env && sed -i 's/COMPANY_NAME=.*/COMPANY_NAME=\"Octapus System\"/g' /opt/gauzy/.env || echo 'COMPANY_NAME=\"Octapus System\"' >> /opt/gauzy/.env",
+      "grep -q 'COMPANY_SITE_NAME' /opt/gauzy/.env && sed -i 's/COMPANY_SITE_NAME=.*/COMPANY_SITE_NAME=\"Octapus System\"/g' /opt/gauzy/.env || echo 'COMPANY_SITE_NAME=\"Octapus System\"' >> /opt/gauzy/.env",
+      "grep -q 'COMPANY_LINK' /opt/gauzy/.env && sed -i 's|COMPANY_LINK=.*|COMPANY_LINK=\"https://octapus.system\"|g' /opt/gauzy/.env || echo 'COMPANY_LINK=\"https://octapus.system\"' >> /opt/gauzy/.env",
+      "grep -q 'APP_SIGNATURE' /opt/gauzy/.env && sed -i 's/APP_SIGNATURE=.*/APP_SIGNATURE=\"OBMS ERP Team - Octapus System\"/g' /opt/gauzy/.env || echo 'APP_SIGNATURE=\"OBMS ERP Team - Octapus System\"' >> /opt/gauzy/.env",
+      "docker cp /opt/gauzy/rebrand_database.js api:/srv/gauzy/rebrand_database.js",
+      "docker exec api node /srv/gauzy/rebrand_database.js",
+      "python3 /opt/gauzy/rebrand_webapp.py",
+      "cd /opt/gauzy && docker compose -f docker-compose.prod.yml down && docker compose -f docker-compose.prod.yml up -d"
+    ]
+  }
+}

@@ -1,0 +1,66 @@
+services:
+  api:
+    container_name: api
+    image: ghcr.io/ever-co/gauzy-api:latest
+    restart: always
+    env_file:
+      - .env
+    environment:
+      APP_NAME: 'OBMS ERP'
+      COMPANY_NAME: 'Octapus System'
+      COMPANY_SITE_NAME: 'Octapus System'
+      COMPANY_LINK: 'https://octapus.system'
+      DEFAULT_CURRENCY: 'AED'
+      ALLOW_SUPER_ADMIN_ROLE: 'true'
+      ALLOW_INSECURE_SEED_CREDENTIALS: 'true'
+      DEMO_SUPER_ADMIN_PASSWORD: admin123
+      DEMO_ADMIN_PASSWORD: admin123
+      DEMO_EMPLOYEE_PASSWORD: admin123
+    entrypoint: '/srv/gauzy/api-patch-entrypoint.sh'
+    command: ['node', 'main.js']
+    volumes:
+      - ./api-patch-entrypoint.sh:/srv/gauzy/api-patch-entrypoint.sh:ro
+      - ./patch_api.js:/srv/gauzy/patches/patch_api.js:ro
+      - ./rebrand_database.js:/srv/gauzy/patches/rebrand_database.js:ro
+    ports:
+      - '3000:3000'
+    networks:
+      - overlay
+
+  webapp:
+    container_name: webapp
+    image: ghcr.io/ever-co/gauzy-webapp:latest
+    restart: always
+    environment:
+      NODE_ENV: production
+      DEMO: 'false'
+      DEMO_SUPER_ADMIN_PASSWORD: admin123
+      DEMO_ADMIN_PASSWORD: admin123
+      APP_NAME: 'OBMS ERP'
+      COMPANY_NAME: 'Octapus System'
+      COMPANY_SITE_NAME: 'Octapus System'
+      COMPANY_LINK: 'https://octapus.system'
+      DEFAULT_CURRENCY: 'AED'
+    entrypoint: '/srv/gauzy/webapp-patch-entrypoint.sh'
+    command: ['nginx', '-g', 'daemon off;']
+    env_file:
+      - .env
+    depends_on:
+      - api
+    volumes:
+      - ./webapp-patch-entrypoint.sh:/srv/gauzy/webapp-patch-entrypoint.sh:ro
+      - ./1404.d530167e5825dfd1.js:/srv/gauzy/patches/1404.d530167e5825dfd1.js:ro
+      - ./logo_Gauzy.svg:/srv/gauzy/patches/logo_Gauzy.svg:ro
+      - ./octapus-auth-model.css:/srv/gauzy/patches/octapus-auth-model.css:ro
+      - ./obms-color-system.css:/srv/gauzy/patches/obms-color-system.css:ro
+      - ./octapus-auth-model.js:/srv/gauzy/patches/octapus-auth-model.js:ro
+      - ./auth-hero-asset.jpg:/srv/gauzy/patches/auth-hero-asset.jpg:ro
+    ports:
+      - '80:4200'
+      - '4200:4200'
+    networks:
+      - overlay
+
+networks:
+  overlay:
+    driver: bridge
